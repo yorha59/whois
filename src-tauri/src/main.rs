@@ -25,11 +25,18 @@ impl ServiceType {
         match port {
             21 => ServiceType::FTP,
             22 => ServiceType::SSH,
+            23 => ServiceType::Unknown, // Telnet
             80 => ServiceType::HTTP,
             443 => ServiceType::HTTPS,
+            445 => ServiceType::Unknown, // SMB
             3306 => ServiceType::MySQL,
+            3389 => ServiceType::Unknown, // RDP
             5432 => ServiceType::PostgreSQL,
+            5900 => ServiceType::Unknown, // VNC
             6379 => ServiceType::Redis,
+            8080 | 8443 | 8888 | 9000 | 5000 | 3000 | 5173 => ServiceType::HTTP,
+            27017 => ServiceType::Unknown, // MongoDB
+            1883 => ServiceType::Unknown,  // MQTT
             _ => ServiceType::Unknown,
         }
     }

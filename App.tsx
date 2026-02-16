@@ -17,6 +17,22 @@ try {
   console.log("Not running in Tauri environment.");
 }
 
+// Detect local subnet from hostname or default to common subnet
+const detectLocalSubnet = async (): Promise<string> => {
+  try {
+    // Try to get local network info
+    const hostname = window.location.hostname;
+    if (hostname && hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+      const parts = hostname.split('.');
+      return `${parts[0]}.${parts[1]}.${parts[2]}`;
+    }
+  } catch (e) {
+    console.log("Could not detect subnet, using default");
+  }
+  // Default to 192.168.1 for most home networks
+  return "192.168.1";
+};
+
 const App: React.FC = () => {
   const [hosts, setHosts] = useState<ScannedHost[]>([]);
   const [isScanning, setIsScanning] = useState(false);
@@ -32,7 +48,9 @@ const App: React.FC = () => {
     // REAL SCAN LOGIC (TAURI)
     if (tauriInvoke) {
       try {
-        const results: any[] = await tauriInvoke('perform_real_scan', { subnet: "192.168.1" });
+        // Auto-detect subnet from local IP
+        const localSubnet = await detectLocalSubnet();
+        const results: any[] = await tauriInvoke('perform_real_scan', { subnet: localSubnet });
         const mappedHosts: ScannedHost[] = results.map(r => ({
           ip: r.ip,
           hostname: r.hostname || undefined,
@@ -95,9 +113,9 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen">
-      <Dashboard 
-        hosts={hosts} 
-        isScanning={isScanning} 
+      <Dashboard
+        hosts={hosts}
+        isScanning={isScanning}
         progress={progress}
         startScan={startScan}
         stats={scanStats}
