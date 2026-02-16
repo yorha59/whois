@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "Whois",
-    "version": "1.0.1"
+    "version": "1.0.2"
   },
   "tauri": {
     "allowlist": {
