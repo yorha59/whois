@@ -1,82 +1,83 @@
-# Whois - 局域网服务扫描器
+# Whois - Local Network Service Scanner
 
-一个基于 Rust 高性能后端和 React 现代化 UI 的局域网服务发现工具。
+[中文](README_CN.md) | English
 
-## 📦 安装
+A high-performance local network service discovery tool built with Rust backend and modern React UI.
+
+## 📦 Installation
 
 ### macOS
-从 [Releases](https://github.com/yorha59/whois/releases) 下载最新的 `.dmg` 文件。
+Download the latest `.dmg` file from [Releases](https://github.com/yorha59/whois/releases).
 
-⚠️ **首次运行**: macOS 会阻止未签名的应用。请查看 [MACOS_INSTALL.md](MACOS_INSTALL.md) 了解如何解决。
+⚠️ **First Launch**: macOS will block unsigned applications. See [MACOS_INSTALL.md](MACOS_INSTALL.md) for solutions.
 
-**快速解决**:
+**Quick Fix**:
 ```bash
 xattr -cr ~/Downloads/Whois_*.dmg
 ```
 
 ### Windows
-从 [Releases](https://github.com/yorha59/whois/releases) 下载 `.msi` 或 `.exe` 安装包并运行。
+Download and run the `.msi` or `.exe` installer from [Releases](https://github.com/yorha59/whois/releases).
 
-## 🚀 快速发布到 GitHub Release
+## 🚀 Quick Release to GitHub
 
-本项目已配置 GitHub Actions 自动化流水线。只需推送标签即可自动构建并发布 macOS 和 Windows 版本。
+This project has GitHub Actions configured for automated builds. Simply push a tag to automatically build and publish macOS and Windows versions.
 
-### 发布步骤：
+### Release Steps:
 
-1. **更新版本号**：
-   确保 `package.json` 和 `src-tauri/tauri.conf.json` 中的 `version` 字段是一致的（例如 `1.0.2`）。
+1. **Update Version**:
+   Ensure `version` fields in `package.json` and `src-tauri/tauri.conf.json` match (e.g., `1.0.2`).
 
-2. **打标签并推送**：
-   在终端运行：
+2. **Tag and Push**:
    ```bash
    git tag v1.0.2
    git push origin v1.0.2
    ```
 
-3. **查看进度**：
-   前往 GitHub 仓库的 **Actions** 选项卡，你可以看到 "Publish Release" 工作流正在运行。
+3. **Monitor Progress**:
+   Go to the **Actions** tab in your GitHub repository to see the "Publish Release" workflow running.
 
-4. **下载产物**：
-   构建完成后，前往 **Releases** 页面。GitHub Action 会自动创建一个草稿（Draft）发布，并上传所有构建好的安装包：
+4. **Download Artifacts**:
+   After completion, go to the **Releases** page. GitHub Actions will automatically create a draft release with all build artifacts:
    - macOS: `.dmg`, `.app.tar.gz`
    - Windows: `.msi`, `.exe`
 
-## 🛠️ 本地开发
+## 🛠️ Local Development
 
-参照 `README_MACOS.md` 或 `README_WINDOWS.md` 进行本地环境配置和构建。
+See `README_MACOS.md` or `README_WINDOWS.md` for local environment setup and building.
 
-### 快速启动开发环境
+### Quick Start Development
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-## 🔐 隐私与安全
+## 🔐 Privacy & Security
 
-本应用使用 Gemini AI 进行安全分析。API Key 请通过环境变量 `API_KEY` 提供（在 `.env.local` 中配置）。
+This application uses Gemini AI for security analysis. Provide API Key via `API_KEY` environment variable (configured in `.env.local`).
 
-## 📋 功能特性
+## 📋 Features
 
-- 🔍 快速扫描局域网内的活跃主机
-- 🔌 识别常见服务端口 (SSH, HTTP, HTTPS, MySQL, PostgreSQL, Redis 等)
-- 🤖 AI 驱动的安全风险分析
-- 🎨 现代化深色主题界面
-- ⚡ Rust 驱动的高性能扫描引擎
+- 🔍 Fast scanning of active hosts in local network
+- 🔌 Identifies common service ports (SSH, HTTP, HTTPS, MySQL, PostgreSQL, Redis, etc.)
+- 🤖 AI-powered security risk analysis
+- 🎨 Modern dark theme interface
+- ⚡ High-performance Rust-powered scanning engine
 
-## 📝 版本说明
+## 📝 Version Notes
 
-- **v1.0.1**: 修复运行时问题（推荐使用）
-  - 恢复 index.html 入口脚本
-  - 修复 Gemini SDK 集成
-  - 移除不兼容的 Tauri v2 配置
+- **v1.0.1**: Runtime fixes (Recommended)
+  - Restored index.html entry script
+  - Fixed Gemini SDK integration
+  - Removed incompatible Tauri v2 configuration
   
-- **v1.0.0**: 初始发布（存在运行时问题，不推荐使用）
+- **v1.0.0**: Initial release (Has runtime issues, not recommended)
 
-## 🤝 贡献
+## 🤝 Contributing
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!
 
-## 📄 许可证
+## 📄 License
 
 Copyright © 2024
