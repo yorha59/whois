@@ -1,0 +1,5 @@
+{
+  "name": "Whois",
+  "description": "A professional UI for a Rust-powered network scanner, featuring service detection for SSH, HTTP, and more, with AI-powered security insights.",
+  "requestFramePermissions": []
+}

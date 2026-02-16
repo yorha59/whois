@@ -1,0 +1,23 @@
+
+[package]
+name = "rust-net-scanner-backend"
+version = "1.0.0"
+description = "Tauri backend for network scanning"
+authors = ["Engineer"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = ["shell-open"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+[features]
+# by default Tauri runs in production mode
+# use `custom-protocol` for production builds
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
