@@ -12,6 +12,19 @@ dist
 dist-ssr
 *.local
 
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/WixTools/
+
+# Build outputs (macOS)
+*.dmg
+*.app.tar.gz
+*.app
+
+# Build outputs (Windows)
+*.msi
+*.exe
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
