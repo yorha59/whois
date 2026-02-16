@@ -28,6 +28,11 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": ""
+      },
       "resources": [],
       "externalBin": [],
       "copyright": "Copyright © 2024",
