@@ -7,9 +7,10 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@tauri-apps/api": "^1.5.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "@tauri-apps/api": "^1.5.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^1.5.0",

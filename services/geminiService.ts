@@ -1,8 +1,8 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { ScannedHost } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.API_KEY || "");
 
 export async function analyzeSecurity(host: ScannedHost): Promise<string> {
   try {
@@ -16,12 +16,11 @@ export async function analyzeSecurity(host: ScannedHost): Promise<string> {
       Keep it professional and concise.
     `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-    });
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
 
-    return response.text || "No security analysis available.";
+    return response.text() || "No security analysis available.";
   } catch (error) {
     console.error("AI Analysis failed:", error);
     return "Analysis unavailable at this time.";
