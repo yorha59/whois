@@ -1,30 +1,36 @@
-
 #![cfg_attr(
-  all(not(debug_assertions), target_os = "windows"),
-  windows_subsystem = "windows"
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
 )]
 
+use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, SocketAddr};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use std::net::{IpAddr, SocketAddr};
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceType {
-    SSH, HTTP, HTTPS, FTP, Redis, PostgreSQL, MySQL, Unknown,
+    SSH,
+    HTTP,
+    HTTPS,
+    FTP,
+    Redis,
+    PostgreSQL,
+    MySQL,
+    Unknown,
 }
 
 impl ServiceType {
     pub fn from_port(port: u16) -> Self {
         match port {
             21 => ServiceType::FTP,
-            22 => ServiceType.SSH,
-            80 => ServiceType.HTTP,
-            443 => ServiceType.HTTPS,
-            3306 => ServiceType.MySQL,
-            5432 => ServiceType.PostgreSQL,
-            6379 => ServiceType.Redis,
-            _ => ServiceType.Unknown,
+            22 => ServiceType::SSH,
+            80 => ServiceType::HTTP,
+            443 => ServiceType::HTTPS,
+            3306 => ServiceType::MySQL,
+            5432 => ServiceType::PostgreSQL,
+            6379 => ServiceType::Redis,
+            _ => ServiceType::Unknown,
         }
     }
 }
@@ -65,7 +71,7 @@ async fn perform_real_scan(subnet: String) -> Vec<HostInfo> {
         let ip_str = format!("{}.{}", subnet, i);
         let ip: IpAddr = ip_str.parse().unwrap();
         let ports = common_ports.clone();
-        
+
         handles.push(tokio::spawn(async move {
             let mut found_ports = Vec::new();
             for port in ports {
@@ -76,7 +82,7 @@ async fn perform_real_scan(subnet: String) -> Vec<HostInfo> {
             if !found_ports.is_empty() {
                 Some(HostInfo {
                     ip: ip_str,
-                    hostname: None, 
+                    hostname: None,
                     ports: found_ports,
                 })
             } else {
@@ -95,8 +101,8 @@ async fn perform_real_scan(subnet: String) -> Vec<HostInfo> {
 }
 
 fn main() {
-  tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![perform_real_scan])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![perform_real_scan])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

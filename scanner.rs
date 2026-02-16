@@ -18,13 +18,13 @@ impl ServiceType {
     pub fn from_port(port: u16) -> Self {
         match port {
             21 => ServiceType::FTP,
-            22 => ServiceType.SSH,
-            80 => ServiceType.HTTP,
-            443 => ServiceType.HTTPS,
-            3306 => ServiceType.MySQL,
-            5432 => ServiceType.Postgres,
-            6379 => ServiceType.Redis,
-            _ => ServiceType.Unknown,
+            22 => ServiceType::SSH,
+            80 => ServiceType::HTTP,
+            443 => ServiceType::HTTPS,
+            3306 => ServiceType::MySQL,
+            5432 => ServiceType::Postgres,
+            6379 => ServiceType::Redis,
+            _ => ServiceType::Unknown,
         }
     }
 }
