@@ -324,6 +324,34 @@ async fn perform_real_scan(subnet: String, extra_ports: Option<Vec<u16>>) -> Vec
     results
 }
 
+// ── W-6: Export scan results ───────────────────────────────────────────────
+
+#[tauri::command]
+fn export_results(results: Vec<HostInfo>, format: String) -> Result<String, String> {
+    match format.as_str() {
+        "json" => {
+            serde_json::to_string_pretty(&results)
+                .map_err(|e| format!("JSON serialization failed: {}", e))
+        }
+        "csv" => {
+            let mut csv = String::from("IP,Hostname,Port,Service\n");
+            for host in &results {
+                let hostname = host.hostname.as_deref().unwrap_or("");
+                if host.ports.is_empty() {
+                    csv.push_str(&format!("{},{},–,–\n", host.ip, hostname));
+                } else {
+                    for port in &host.ports {
+                        csv.push_str(&format!("{},{},{},{}\n",
+                            host.ip, hostname, port.port, port.service_label));
+                    }
+                }
+            }
+            Ok(csv)
+        }
+        _ => Err(format!("Unsupported format: {}. Use 'json' or 'csv'.", format)),
+    }
+}
+
 // ── App entry point ────────────────────────────────────────────────────────
 
 fn main() {
@@ -331,6 +359,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             detect_network,
             perform_real_scan,
+            export_results,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
