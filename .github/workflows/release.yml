@@ -12,7 +12,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, windows-latest]
+        include:
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
+          - platform: windows-latest
+            args: ""
+            rust_target: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -25,22 +34,69 @@ jobs:
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
-
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: install frontend dependencies
         run: npm install
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: build frontend
+        run: npm run build
+
+      - name: build Tauri app
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Skip DMG bundling in CI (AppleScript fails in headless runners)
+          TAURI_SKIP_DMG: "true"
         with:
-          tagName: v__VERSION__ # tauri-action 会自动替换 __VERSION__
+          tagName: v__VERSION__
           releaseName: "Whois v__VERSION__"
-          releaseBody: "See the assets below to download the latest version of Whois."
+          releaseBody: |
+            ## What's New
+            See the [commit log](https://github.com/yorha59/whois/commits/main) for details.
+
+            ## Downloads
+            - **macOS (Apple Silicon)**: `.app.tar.gz` (aarch64)
+            - **macOS (Intel)**: `.app.tar.gz` (x86_64)
+            - **Windows**: `.msi` or `.exe`
+
+            > ⚠️ macOS: Run `xattr -cr Whois.app` if blocked by Gatekeeper.
           releaseDraft: true
           prerelease: false
+          args: ${{ matrix.args }}
+
+      # Create DMG manually on macOS (sandbox-safe, works in CI)
+      - name: create DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos"
+          DMG_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg"
+          
+          if [ -d "$APP_DIR/Whois.app" ] && [ -f "$DMG_DIR/bundle_dmg.sh" ]; then
+            cd "$DMG_DIR"
+            ARCH=$(echo "${{ matrix.rust_target }}" | cut -d'-' -f1)
+            DMG_NAME="Whois_${ARCH}.dmg"
+            
+            bash bundle_dmg.sh --sandbox-safe \
+              --volname "Whois" \
+              --icon "Whois.app" 180 170 \
+              --app-drop-link 480 170 \
+              --window-size 660 400 \
+              --hide-extension "Whois.app" \
+              "$DMG_NAME" \
+              "$(cd ../../macos && pwd)/Whois.app" || true
+            
+            if [ -f "$DMG_NAME" ]; then
+              echo "✅ DMG created: $DMG_NAME"
+              ls -lh "$DMG_NAME"
+            fi
+          fi
+
+      - name: upload DMG artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: whois-dmg-${{ matrix.rust_target }}
+          path: src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: ignore
