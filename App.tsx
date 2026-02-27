@@ -17,20 +17,26 @@ try {
   console.log("Not running in Tauri environment.");
 }
 
-// Detect local subnet from hostname or default to common subnet
-const detectLocalSubnet = async (): Promise<string> => {
+// W-1: Detect subnet via Rust backend (Tauri) or fallback
+const detectLocalSubnet = async (): Promise<{ subnet: string; localIp: string }> => {
+  // In Tauri: call Rust backend to detect real network
+  if (tauriInvoke) {
+    try {
+      const info = await tauriInvoke('detect_network');
+      return { subnet: info.subnet, localIp: info.local_ip };
+    } catch (e) {
+      console.error("detect_network failed:", e);
+    }
+  }
+  // Browser fallback: try to detect from hostname, else default
   try {
-    // Try to get local network info
     const hostname = window.location.hostname;
     if (hostname && hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
       const parts = hostname.split('.');
-      return `${parts[0]}.${parts[1]}.${parts[2]}`;
+      return { subnet: `${parts[0]}.${parts[1]}.${parts[2]}`, localIp: hostname };
     }
-  } catch (e) {
-    console.log("Could not detect subnet, using default");
-  }
-  // Default to 192.168.1 for most home networks
-  return "192.168.1";
+  } catch (e) {}
+  return { subnet: "192.168.1", localIp: "unknown" };
 };
 
 const App: React.FC = () => {
@@ -38,6 +44,12 @@ const App: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [scanStats, setScanStats] = useState({ total: 0, active: 0 });
+  const [networkInfo, setNetworkInfo] = useState<{ subnet: string; localIp: string } | null>(null);
+
+  // Auto-detect network on mount
+  useEffect(() => {
+    detectLocalSubnet().then(info => setNetworkInfo(info));
+  }, []);
 
   const startScan = useCallback(async () => {
     setIsScanning(true);
@@ -45,17 +57,25 @@ const App: React.FC = () => {
     setHosts([]);
     setScanStats({ total: 0, active: 0 });
 
+    const net = networkInfo || await detectLocalSubnet();
+
     // REAL SCAN LOGIC (TAURI)
     if (tauriInvoke) {
       try {
-        // Auto-detect subnet from local IP
-        const localSubnet = await detectLocalSubnet();
-        const results: any[] = await tauriInvoke('perform_real_scan', { subnet: localSubnet });
+        setProgress(10); // Show we're starting
+        const results: any[] = await tauriInvoke('perform_real_scan', { 
+          subnet: net.subnet,
+          extraPorts: null  // W-5: can pass custom ports later
+        });
         const mappedHosts: ScannedHost[] = results.map(r => ({
           ip: r.ip,
           hostname: r.hostname || undefined,
           status: 'online',
-          ports: r.ports as NetworkPort[],
+          ports: r.ports.map((p: any) => ({
+            port: p.port,
+            service: p.service,
+            service_label: p.service_label || p.service,
+          })) as NetworkPort[],
           lastSeen: new Date().toLocaleTimeString()
         }));
         setHosts(mappedHosts);
@@ -80,12 +100,12 @@ const App: React.FC = () => {
         return;
       }
 
-      const ip = `192.168.1.${currentIpIdx}`;
+      const ip = `${net.subnet}.${currentIpIdx}`;
       setScanStats(prev => ({ ...prev, total: currentIpIdx }));
 
       if (Math.random() > 0.9) {
-        const foundPorts = [22, 80, 443, 6379]
-          .filter(() => Math.random() > 0.8)
+        const foundPorts = [22, 80, 443, 6379, 3306, 5432, 8080]
+          .filter(() => Math.random() > 0.7)
           .map(port => ({
             port,
             service: COMMON_PORTS[port] || ServiceType.UNKNOWN,
@@ -109,10 +129,20 @@ const App: React.FC = () => {
     }, 30);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [networkInfo]);
 
   return (
     <div className="min-h-screen">
+      {networkInfo && (
+        <div style={{ 
+          position: 'fixed', bottom: 12, left: 12, 
+          background: 'rgba(0,0,0,0.6)', color: '#8892b0',
+          padding: '4px 10px', borderRadius: 6, fontSize: 11,
+          fontFamily: 'JetBrains Mono, monospace', zIndex: 100
+        }}>
+          {tauriInvoke ? '🟢' : '🟡'} {networkInfo.localIp} / {networkInfo.subnet}.0/24
+        </div>
+      )}
       <Dashboard
         hosts={hosts}
         isScanning={isScanning}
