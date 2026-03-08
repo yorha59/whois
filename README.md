@@ -6,7 +6,7 @@ A high-performance local network service discovery tool built with Rust backend 
 
 ## 📸 Screenshot
 
-![Whois Screenshot](screenshot.png)
+
 
 ## 📦 Installation
 
