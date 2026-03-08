@@ -5,9 +5,7 @@
 A high-performance local network service discovery tool built with Rust backend and modern React UI.
 
 ## 📸 Screenshot
-
-
-
+<img width="2000" height="1600" alt="image" src="https://github.com/user-attachments/assets/d172d145-9106-438d-acf1-6c01d27668d1" />
 ## 📦 Installation
 
 ### macOS
