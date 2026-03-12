@@ -19,6 +19,8 @@ fn create_test_host(ip: &str, hostname: Option<&str>, ports: Vec<PortInfo>) -> H
         ip: ip.to_string(),
         hostname: hostname.map(|h| h.to_string()),
         ports,
+        mdns_services: None,
+        ssdp_devices: None,
     }
 }
 

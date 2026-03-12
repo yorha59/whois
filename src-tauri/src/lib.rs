@@ -1,9 +1,587 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::process::Command;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
+use surge_ping::{Client, Config};
+
+// ── ARP 扫描：发现 IoT 设备（链路层发现，无法被防火墙阻止） ─────────────────
+
+/// ARP 扫描结果：IP -> MAC 地址
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArpEntry {
+    pub ip: String,
+    pub mac: String,
+    pub interface: Option<String>,
+}
+
+/// 执行 ARP 扫描发现本地网络中的设备
+/// 使用系统命令 "arp -a" (macOS/Linux) 或 "arp -an" (Linux)
+pub fn arp_scan(subnet: &str) -> Vec<ArpEntry> {
+    let mut entries = Vec::new();
+
+    // 尝试不同的 ARP 命令
+    let output = if cfg!(target_os = "macos") {
+        Command::new("arp").arg("-a").output()
+    } else {
+        // Linux
+        Command::new("arp").args(&["-an"]).output()
+    };
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            entries = parse_arp_output(&stdout, subnet);
+        }
+    }
+
+    // 如果 arp -a 没有返回结果，尝试 ip neigh (Linux)
+    if entries.is_empty() && cfg!(target_os = "linux") {
+        if let Ok(output) = Command::new("ip").args(&["neigh", "show"]).output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                entries = parse_ip_neigh_output(&stdout, subnet);
+            }
+        }
+    }
+
+    entries
+}
+
+/// 解析 macOS 风格的 arp -a 输出
+/// 格式: ? (192.168.1.1) at ab:cd:ef:12:34:56 on en0 [ethernet]
+pub fn parse_arp_output(output: &str, subnet: &str) -> Vec<ArpEntry> {
+    let mut entries = Vec::new();
+
+    for line in output.lines() {
+        // macOS 格式: ? (192.168.1.1) at ab:cd:ef:12:34:56 on en0
+        // Linux 格式: ? (192.168.1.1) at ab:cd:ef:12:34:56 [ether] on eth0
+        if let Some(ip_start) = line.find('(') {
+            if let Some(ip_end) = line.find(')') {
+                let ip = line[ip_start + 1..ip_end].to_string();
+
+                // 只保留指定子网的 IP
+                if !ip.starts_with(subnet) {
+                    continue;
+                }
+
+                // 提取 MAC 地址
+                if let Some(at_pos) = line.find("at ") {
+                    let after_at = &line[at_pos + 3..];
+                    let mac = after_at
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+
+                    // 验证 MAC 地址格式
+                    if mac.len() >= 17 && mac.contains(':') {
+                        // 提取接口名
+                        let interface = line
+                            .split(" on ")
+                            .nth(1)
+                            .map(|s| s.split_whitespace().next().unwrap_or("").to_string());
+
+                        entries.push(ArpEntry {
+                            ip,
+                            mac,
+                            interface,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+/// 解析 Linux ip neigh 输出
+/// 格式: 192.168.1.1 dev eth0 lladdr ab:cd:ef:12:34:56 REACHABLE
+pub fn parse_ip_neigh_output(output: &str, subnet: &str) -> Vec<ArpEntry> {
+    let mut entries = Vec::new();
+
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 5 {
+            let ip = parts[0].to_string();
+
+            // 只保留指定子网的 IP
+            if !ip.starts_with(subnet) {
+                continue;
+            }
+
+            // 查找 lladdr 后的 MAC 地址
+            if let Some(lladdr_pos) = parts.iter().position(|&p| p == "lladdr") {
+                if let Some(mac) = parts.get(lladdr_pos + 1) {
+                    // 获取接口名 (dev 后的值)
+                    let interface = parts.get(2).map(|s| s.to_string());
+
+                    entries.push(ArpEntry {
+                        ip,
+                        mac: mac.to_string(),
+                        interface,
+                    });
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+/// 发送 ARP 请求主动发现设备（使用 arping）
+pub async fn active_arp_scan(subnet: &str) -> Vec<ArpEntry> {
+    let mut entries = Vec::new();
+    let mut handles = Vec::new();
+
+    // 对子网内的每个 IP 发送 ARP 请求
+    for i in 1..255 {
+        let ip = format!("{}.{}", subnet, i);
+        handles.push(tokio::task::spawn_blocking(move || {
+            send_arp_request(&ip)
+        }));
+    }
+
+    for handle in handles {
+        if let Ok(Some(entry)) = handle.await {
+            entries.push(entry);
+        }
+    }
+
+    entries
+}
+
+/// 发送单个 ARP 请求
+fn send_arp_request(ip: &str) -> Option<ArpEntry> {
+    // 尝试使用 arping（需要 root 权限）
+    let output = if cfg!(target_os = "macos") {
+        // macOS: arping -c 1 -t 500 <ip>
+        Command::new("arping")
+            .args(&["-c", "1", "-t", "500", ip])
+            .output()
+    } else {
+        // Linux: arping -c 1 -w 500000 <ip>
+        Command::new("arping")
+            .args(&["-c", "1", "-w", "500000", ip])
+            .output()
+    };
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // 解析 arping 输出获取 MAC 地址
+            if let Some(mac) = parse_arping_output(&stdout) {
+                return Some(ArpEntry {
+                    ip: ip.to_string(),
+                    mac,
+                    interface: None,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// 解析 arping 输出提取 MAC 地址
+pub fn parse_arping_output(output: &str) -> Option<String> {
+    // 典型输出: 64 bytes from 192.168.1.1 (ab:cd:ef:12:34:56): icmp_seq=0
+    for line in output.lines() {
+        if let Some(open) = line.find('(') {
+            if let Some(close) = line.find(')') {
+                let mac = &line[open + 1..close];
+                if mac.contains(':') && mac.len() == 17 {
+                    return Some(mac.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+// ── ICMP Ping 主机存活检测 ──────────────────────────────────────────────────
+
+/// Ping 一个主机，返回是否在线（超时 500ms）
+pub async fn ping_host(ip: &str) -> bool {
+    let ip_addr: IpAddr = match ip.parse() {
+        Ok(addr) => addr,
+        Err(_) => return false,
+    };
+
+    // 暂不支持 IPv6
+    if matches!(ip_addr, IpAddr::V6(_)) {
+        return false;
+    }
+
+    let config = Config::default();
+    let client = match Client::new(&config) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // surge-ping API: pinger 是异步方法，返回 Pinger 结构体（非 Result）
+    let ident = surge_ping::PingIdentifier(rand::random());
+    let mut pinger = client.pinger(ip_addr, ident).await;
+    pinger.timeout(Duration::from_millis(500));
+
+    // 发送 1 个 ICMP 包，序号 0
+    let seq = surge_ping::PingSequence(0);
+    match pinger.ping(seq, &[]).await {
+        Ok((_, _)) => true,
+        Err(_) => false,
+    }
+}
+
+// ── UDP Service Discovery (mDNS + SSDP) ────────────────────────────────────
+
+/// mDNS 服务发现结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MdnsServiceInfo {
+    pub service_type: String,
+    pub name: String,
+    pub hostname: Option<String>,
+    pub port: Option<u16>,
+    pub ip: Option<String>,
+    pub txt_records: Vec<String>,
+}
+
+/// SSDP/UPnP 设备发现结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SsdpDeviceInfo {
+    pub device_type: String,
+    pub location: Option<String>,
+    pub server: Option<String>,
+    pub usn: Option<String>,
+    pub ip: String,
+}
+
+/// 服务发现结果汇总
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceDiscoveryResult {
+    pub ip: String,
+    pub mdns_services: Vec<MdnsServiceInfo>,
+    pub ssdp_devices: Vec<SsdpDeviceInfo>,
+}
+
+impl ServiceDiscoveryResult {
+    pub fn new(ip: String) -> Self {
+        Self {
+            ip,
+            mdns_services: Vec::new(),
+            ssdp_devices: Vec::new(),
+        }
+    }
+}
+
+/// mDNS 查询目标
+const MDNS_QUERY_TARGETS: &[(&str, &str)] = &[
+    ("_hap._tcp.local", "HomeKit"),
+    ("_miio._udp.local", "Xiaomi MiIO"),
+    ("_yeelight._tcp.local", "Yeelight"),
+    ("_googlecast._tcp.local", "Google Cast"),
+    ("_airplay._tcp.local", "AirPlay"),
+    ("_raop._tcp.local", "AirTunes RAOP"),
+    ("_sonos._tcp.local", "Sonos"),
+    ("_http._tcp.local", "HTTP"),
+    ("_printer._tcp.local", "Printer"),
+    ("_ipp._tcp.local", "IPP Printer"),
+];
+
+/// 构建 mDNS 查询包 (DNS-SD)
+pub fn build_mdns_query(service: &str) -> Vec<u8> {
+    let mut packet = Vec::new();
+
+    // Transaction ID
+    packet.extend_from_slice(&[0x00, 0x00]);
+    // Flags: Standard query
+    packet.extend_from_slice(&[0x00, 0x00]);
+    // Questions: 1
+    packet.extend_from_slice(&[0x00, 0x01]);
+    // Answer RRs: 0
+    packet.extend_from_slice(&[0x00, 0x00]);
+    // Authority RRs: 0
+    packet.extend_from_slice(&[0x00, 0x00]);
+    // Additional RRs: 0
+    packet.extend_from_slice(&[0x00, 0x00]);
+
+    // Query name
+    for part in service.split('.') {
+        packet.push(part.len() as u8);
+        packet.extend_from_slice(part.as_bytes());
+    }
+    packet.push(0x00);
+
+    // Query Type: PTR (12)
+    packet.extend_from_slice(&[0x00, 0x0C]);
+    // Query Class: IN (1), with Unicast Response bit
+    packet.extend_from_slice(&[0x00, 0x01]);
+
+    packet
+}
+
+/// 解析 mDNS 响应包
+pub fn parse_mdns_response(data: &[u8], src_ip: &str) -> Vec<MdnsServiceInfo> {
+    let mut services = Vec::new();
+
+    if data.len() < 12 {
+        return services;
+    }
+
+    // Parse header
+    let qdcount = u16::from_be_bytes([data[4], data[5]]);
+    let ancount = u16::from_be_bytes([data[6], data[7]]);
+
+    if ancount == 0 {
+        return services;
+    }
+
+    // Skip header
+    let mut offset = 12;
+
+    // Skip questions
+    for _ in 0..qdcount {
+        while offset < data.len() && data[offset] != 0 {
+            let len = data[offset] as usize;
+            if len & 0xC0 == 0xC0 {
+                // Compressed pointer
+                offset += 2;
+                break;
+            }
+            offset += len + 1;
+        }
+        if offset < data.len() && data[offset] == 0 {
+            offset += 1;
+        }
+        // Skip QTYPE and QCLASS
+        offset += 4;
+    }
+
+    // Parse answers (simplified)
+    // In a real implementation, we'd fully parse all DNS records
+    // For now, extract service info from SRV and TXT records if present
+
+    // Look for service patterns in the raw data
+    let data_str = String::from_utf8_lossy(data);
+
+    // Try to extract service names
+    for (service_type, label) in MDNS_QUERY_TARGETS {
+        if data_str.contains(service_type.trim_end_matches(".local")) {
+            let mut info = MdnsServiceInfo {
+                service_type: label.to_string(),
+                name: String::new(),
+                hostname: None,
+                port: None,
+                ip: Some(src_ip.to_string()),
+                txt_records: Vec::new(),
+            };
+
+            // Try to extract instance name
+            if let Some(idx) = data_str.find(service_type) {
+                // Look backwards for the instance name
+                let before = &data_str[..idx];
+                if let Some(last_dot) = before.rfind('.') {
+                    if let Some(second_last_dot) = before[..last_dot].rfind('.') {
+                        info.name = before[second_last_dot + 1..last_dot].to_string();
+                    }
+                }
+            }
+
+            services.push(info);
+        }
+    }
+
+    services
+}
+
+/// 执行 mDNS 服务发现
+pub async fn mdns_discovery(timeout_ms: u64) -> Vec<MdnsServiceInfo> {
+    let mut all_services = Vec::new();
+
+    // Try to bind to multicast port 5353, or use any available port
+    let socket = match UdpSocket::bind("0.0.0.0:5353") {
+        Ok(s) => s,
+        Err(_) => match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(_) => return all_services,
+        },
+    };
+
+    // Enable broadcast
+    let _ = socket.set_broadcast(true);
+
+    // Set timeouts
+    let _ = socket.set_read_timeout(Some(std::time::Duration::from_millis(timeout_ms)));
+    let _ = socket.set_write_timeout(Some(std::time::Duration::from_millis(1000)));
+
+    // Join multicast group for mDNS
+    // Note: This may require elevated permissions on some systems
+
+    // Send queries for each service type
+    let mdns_addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(224, 0, 0, 251), 5353);
+
+    for (service, _) in MDNS_QUERY_TARGETS {
+        let query = build_mdns_query(service);
+        let _ = socket.send_to(&query, mdns_addr);
+    }
+
+    // Also send a general browse query for all services
+    let browse_query = build_mdns_query("_services._dns-sd._udp.local");
+    let _ = socket.send_to(&browse_query, mdns_addr);
+
+    // Collect responses
+    let start = std::time::Instant::now();
+    let mut buf = [0u8; 4096];
+
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        match socket.recv_from(&mut buf) {
+            Ok((len, src)) => {
+                let services = parse_mdns_response(&buf[..len], &src.ip().to_string());
+                all_services.extend(services);
+            }
+            Err(_) => {
+                // Timeout or error, continue
+                break;
+            }
+        }
+    }
+
+    // Remove duplicates based on service type and IP
+    all_services.sort_by(|a, b| {
+        (a.service_type.clone(), a.ip.clone()).cmp(&(b.service_type.clone(), b.ip.clone()))
+    });
+    all_services.dedup_by(|a, b| a.service_type == b.service_type && a.ip == b.ip);
+
+    all_services
+}
+
+/// 构建 SSDP M-SEARCH 请求
+pub fn build_ssdp_search() -> String {
+    format!(
+        "M-SEARCH * HTTP/1.1\r\n\
+         HOST: 239.255.255.250:1900\r\n\
+         MAN: \"ssdp:discover\"\r\n\
+         MX: 3\r\n\
+         ST: ssdp:all\r\n\
+         \r\n"
+    )
+}
+
+/// 解析 SSDP 响应
+pub fn parse_ssdp_response(data: &[u8], src_ip: &str) -> Option<SsdpDeviceInfo> {
+    let response = String::from_utf8_lossy(data);
+    let lines: Vec<&str> = response.lines().collect();
+
+    if lines.is_empty() || !lines[0].contains("200 OK") {
+        return None;
+    }
+
+    let mut device_type = String::from("Unknown");
+    let mut location = None;
+    let mut server = None;
+    let mut usn = None;
+
+    for line in &lines[1..] {
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim().to_lowercase();
+            let value = value.trim().to_string();
+
+            match key.as_str() {
+                "st" | "nt" => device_type = value,
+                "location" => location = Some(value),
+                "server" => server = Some(value),
+                "usn" => usn = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    Some(SsdpDeviceInfo {
+        device_type,
+        location,
+        server,
+        usn,
+        ip: src_ip.to_string(),
+    })
+}
+
+/// 执行 SSDP/UPnP 设备发现
+pub async fn ssdp_discovery(timeout_ms: u64) -> Vec<SsdpDeviceInfo> {
+    let mut devices = Vec::new();
+
+    // Bind to any available port
+    let socket = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(_) => return devices,
+    };
+
+    // Enable broadcast
+    let _ = socket.set_broadcast(true);
+
+    // Set timeouts
+    let _ = socket.set_read_timeout(Some(std::time::Duration::from_millis(timeout_ms)));
+    let _ = socket.set_write_timeout(Some(std::time::Duration::from_millis(1000)));
+
+    // Send M-SEARCH to multicast address
+    let ssdp_addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(239, 255, 255, 250), 1900);
+    let request = build_ssdp_search();
+
+    // Send multiple times to increase discovery rate
+    for _ in 0..3 {
+        let _ = socket.send_to(request.as_bytes(), ssdp_addr);
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // Collect responses
+    let start = std::time::Instant::now();
+    let mut buf = [0u8; 4096];
+
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        match socket.recv_from(&mut buf) {
+            Ok((len, src)) => {
+                if let Some(device) = parse_ssdp_response(&buf[..len], &src.ip().to_string()) {
+                    devices.push(device);
+                }
+            }
+            Err(_) => {
+                // Timeout or error, continue
+                break;
+            }
+        }
+    }
+
+    // Remove duplicates based on USN
+    devices.sort_by(|a, b| a.usn.clone().unwrap_or_default().cmp(&b.usn.clone().unwrap_or_default()));
+    devices.dedup_by(|a, b| a.usn == b.usn && a.ip == b.ip);
+
+    devices
+}
+
+/// 对特定 IP 执行服务发现
+pub async fn discover_services_for_host(ip: &str, timeout_ms: u64) -> ServiceDiscoveryResult {
+    let mut result = ServiceDiscoveryResult::new(ip.to_string());
+
+    // For now, we use the global discovery and filter by IP
+    // In a future enhancement, we could target specific IPs
+
+    let mdns_services = mdns_discovery(timeout_ms / 2).await;
+    for service in mdns_services {
+        if service.ip.as_deref() == Some(ip) {
+            result.mdns_services.push(service);
+        }
+    }
+
+    let ssdp_devices = ssdp_discovery(timeout_ms / 2).await;
+    for device in ssdp_devices {
+        if device.ip == ip {
+            result.ssdp_devices.push(device);
+        }
+    }
+
+    result
+}
 
 // ── Service type enum (W-2: expanded) ──────────────────────────────────────
 
@@ -32,6 +610,11 @@ pub enum ServiceType {
     Prometheus,
     MinIO,
     Gitea,
+    SSDP,
+    MDNS,
+    LLMNR,
+    Yeelight,
+    XiaomiGateway,
     Unknown,
 }
 
@@ -52,15 +635,21 @@ impl ServiceType {
             3000 => ServiceType::Gitea, // or Grafana, common for both
             3306 => ServiceType::MySQL,
             3389 => ServiceType::RDP,
+            4321 | 9898 => ServiceType::Yeelight,
+            5353 => ServiceType::MDNS,
+            5357 => ServiceType::LLMNR,
             5432 => ServiceType::PostgreSQL,
             5900 | 5901 => ServiceType::VNC,
             6379 => ServiceType::Redis,
             6443 => ServiceType::Kubernetes,
             8080 | 8443 | 8888 | 5000 | 5173 => ServiceType::HTTP,
+            8083 | 8084 | 8245 => ServiceType::XiaomiGateway,
             9000 => ServiceType::MinIO,
             9090 => ServiceType::Prometheus,
             9200 | 9300 => ServiceType::Elasticsearch,
+            1900 => ServiceType::SSDP,
             27017 => ServiceType::MongoDB,
+            54321 => ServiceType::XiaomiGateway,
             _ => ServiceType::Unknown,
         }
     }
@@ -90,6 +679,11 @@ impl ServiceType {
             ServiceType::Prometheus => "Prometheus",
             ServiceType::MinIO => "MinIO",
             ServiceType::Gitea => "Gitea",
+            ServiceType::SSDP => "SSDP/UPnP",
+            ServiceType::MDNS => "mDNS",
+            ServiceType::LLMNR => "LLMNR",
+            ServiceType::Yeelight => "Yeelight",
+            ServiceType::XiaomiGateway => "Xiaomi Gateway",
             ServiceType::Unknown => "Unknown",
         }
     }
@@ -124,6 +718,22 @@ pub struct HostInfo {
     pub ip: String,
     pub hostname: Option<String>,
     pub ports: Vec<PortInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mdns_services: Option<Vec<MdnsServiceInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssdp_devices: Option<Vec<SsdpDeviceInfo>>,
+}
+
+impl HostInfo {
+    pub fn new(ip: String) -> Self {
+        Self {
+            ip,
+            hostname: None,
+            ports: Vec::new(),
+            mdns_services: None,
+            ssdp_devices: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,16 +755,23 @@ const COMMON_PORTS: &[u16] = &[
     445,   // SMB
     587,   // SMTP (submission)
     1883,  // MQTT
+    1900,  // SSDP/UPnP
     2375,  // Docker
     3000,  // Gitea / Grafana
     3306,  // MySQL
     3389,  // RDP
+    4321,  // Yeelight
     5000,  // HTTP (Flask/registry)
+    5353,  // mDNS
+    5357,  // LLMNR
     5432,  // PostgreSQL
     5900,  // VNC
     6379,  // Redis
     6443,  // Kubernetes API
     8080,  // HTTP alt
+    8083,  // Xiaomi
+    8084,  // Xiaomi
+    8245,  // Xiaomi
     8443,  // HTTPS alt
     8883,  // MQTT TLS
     8888,  // HTTP alt
@@ -162,7 +779,9 @@ const COMMON_PORTS: &[u16] = &[
     9090,  // Prometheus
     9200,  // Elasticsearch
     9300,  // Elasticsearch transport
+    9898,  // Yeelight
     27017, // MongoDB
+    54321, // Xiaomi Gateway
 ];
 
 // ── Port scanning ──────────────────────────────────────────────────────────
@@ -256,7 +875,7 @@ pub fn detect_network_internal() -> Result<NetworkInfo, String> {
     }
 }
 
-// ── Main scan function (improved with concurrency control) ─────────────────
+// ── Main scan function (improved with ARP scan + ICMP ping + port scan) ────
 
 pub async fn perform_real_scan_internal(
     subnet: String,
@@ -277,18 +896,115 @@ pub async fn perform_real_scan_internal(
     }
     ports_to_scan.sort();
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 1: ARP 扫描（发现链路层设备，IoT 设备无法阻止 ARP）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    println!("Phase 1: ARP scan to discover all link-layer devices...");
+    let arp_entries = arp_scan(&subnet);
+    println!("Phase 1 complete: {} devices found via ARP", arp_entries.len());
+
+    // 收集 ARP 发现的 IP 地址
+    let mut online_hosts: Vec<String> = arp_entries
+        .iter()
+        .map(|e| e.ip.clone())
+        .collect();
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 2: ICMP Ping 补充检测（捕获那些 ARP 缓存中没有但有响应的设备）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    println!("Phase 2: ICMP Ping scan to detect additional online hosts...");
+    let mut ping_handles = Vec::new();
+
+    for i in 1..255 {
+        let ip_str = format!("{}.{}", subnet, i);
+
+        // 跳过已经通过 ARP 发现的设备
+        if online_hosts.contains(&ip_str) {
+            continue;
+        }
+
+        ping_handles.push(tokio::spawn(async move {
+            if ping_host(&ip_str).await {
+                Some(ip_str)
+            } else {
+                None
+            }
+        }));
+    }
+
+    for handle in ping_handles {
+        if let Ok(Some(ip)) = handle.await {
+            online_hosts.push(ip);
+        }
+    }
+
+    println!("Phase 2 complete: {} total hosts online", online_hosts.len());
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 3: UDP Service Discovery (mDNS + SSDP)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    println!("Phase 3: UDP Service Discovery (mDNS + SSDP)...");
+
+    // Run mDNS discovery
+    let mdns_results = mdns_discovery(2000).await;
+    println!("  mDNS: Found {} service(s)", mdns_results.len());
+    for service in &mdns_results {
+        println!("    - {} ({}) at {:?}", service.service_type, service.name, service.ip);
+    }
+
+    // Run SSDP discovery
+    let ssdp_results = ssdp_discovery(2000).await;
+    println!("  SSDP: Found {} device(s)", ssdp_results.len());
+    for device in &ssdp_results {
+        println!("    - {} at {}", device.device_type, device.ip);
+    }
+
+    // Create a map of discovered services by IP
+    let mut services_by_ip: std::collections::HashMap<String, ServiceDiscoveryResult> =
+        std::collections::HashMap::new();
+
+    for service in mdns_results {
+        if let Some(ip) = &service.ip {
+            let entry = services_by_ip
+                .entry(ip.clone())
+                .or_insert_with(|| ServiceDiscoveryResult::new(ip.clone()));
+            entry.mdns_services.push(service);
+        }
+    }
+
+    for device in ssdp_results {
+        let entry = services_by_ip
+            .entry(device.ip.clone())
+            .or_insert_with(|| ServiceDiscoveryResult::new(device.ip.clone()));
+        entry.ssdp_devices.push(device);
+    }
+
+    println!("Phase 3 complete: {} host(s) with discovered services", services_by_ip.len());
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 4: 对发现的设备进行端口扫描
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    println!("Phase 4: Port scanning {} hosts...", online_hosts.len());
+
     // Create semaphore to limit concurrent connections
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
     let mut handles = Vec::new();
 
-    for i in 1..255 {
-        let ip_str = format!("{}.{}", subnet, i);
+    // Convert services_by_ip to Arc for sharing across tasks
+    let services_by_ip = Arc::new(services_by_ip);
+
+    for ip_str in online_hosts {
         let ip: IpAddr = match ip_str.parse() {
             Ok(ip) => ip,
             Err(_) => continue,
         };
         let ports = ports_to_scan.clone();
         let sem_clone = Arc::clone(&semaphore);
+        let services_clone = Arc::clone(&services_by_ip);
         let timeout_ms = config.timeout_ms;
 
         handles.push(tokio::spawn(async move {
@@ -311,21 +1027,26 @@ pub async fn perform_real_scan_internal(
                 }
             }
 
-            if !found_ports.is_empty() {
-                // Sort ports numerically
-                found_ports.sort_by_key(|p| p.port);
+            // Sort ports numerically
+            found_ports.sort_by_key(|p| p.port);
 
-                // W-3: Try hostname resolution
-                let hostname = resolve_hostname(&ip_str);
+            // W-3: Try hostname resolution
+            let hostname = resolve_hostname(&ip_str);
 
-                Some(HostInfo {
-                    ip: ip_str,
-                    hostname,
-                    ports: found_ports,
-                })
+            // Get discovered services for this host
+            let (mdns_services, ssdp_devices) = if let Some(discovered) = services_clone.get(&ip_str) {
+                (Some(discovered.mdns_services.clone()), Some(discovered.ssdp_devices.clone()))
             } else {
-                None
-            }
+                (None, None)
+            };
+
+            Some(HostInfo {
+                ip: ip_str,
+                hostname,
+                ports: found_ports,
+                mdns_services,
+                ssdp_devices,
+            })
         }));
     }
 

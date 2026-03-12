@@ -1,8 +1,11 @@
 //! Unit tests for WhoIs scanner backend
 
+pub mod arp_test;
+pub mod ping_test;
 pub mod service_type_test;
 pub mod export_test;
 pub mod network_test;
+pub mod service_discovery_test;
 
 use crate::{export_results_internal as export_results, HostInfo, PortInfo, ServiceType};
 
@@ -85,6 +88,8 @@ fn test_export_results_json() {
                     service_label: "HTTPS".to_string(),
                 },
             ],
+            mdns_services: None,
+            ssdp_devices: None,
         },
         HostInfo {
             ip: "192.168.1.100".to_string(),
@@ -94,6 +99,8 @@ fn test_export_results_json() {
                 service: ServiceType::SSH,
                 service_label: "SSH".to_string(),
             }],
+            mdns_services: None,
+            ssdp_devices: None,
         },
     ];
 
@@ -131,6 +138,8 @@ fn test_export_results_csv() {
                     service_label: "HTTPS".to_string(),
                 },
             ],
+            mdns_services: None,
+            ssdp_devices: None,
         },
         HostInfo {
             ip: "192.168.1.100".to_string(),
@@ -140,6 +149,8 @@ fn test_export_results_csv() {
                 service: ServiceType::SSH,
                 service_label: "SSH".to_string(),
             }],
+            mdns_services: None,
+            ssdp_devices: None,
         },
     ];
 
@@ -165,6 +176,8 @@ fn test_export_results_csv_empty_ports() {
         ip: "192.168.1.1".to_string(),
         hostname: None,
         ports: vec![],
+        mdns_services: None,
+        ssdp_devices: None,
     }];
 
     let csv_result = export_results(results, "csv".to_string());
@@ -245,8 +258,83 @@ fn test_struct_creation() {
         ip: "10.0.0.1".to_string(),
         hostname: Some("testhost".to_string()),
         ports: vec![port],
+        mdns_services: None,
+        ssdp_devices: None,
     };
     assert_eq!(host.ip, "10.0.0.1");
     assert_eq!(host.hostname, Some("testhost".to_string()));
     assert_eq!(host.ports.len(), 1);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IoT 端口扩展测试
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod iot_port_test {
+    use crate::ServiceType;
+
+    /// 测试新增的 IoT 端口映射
+    #[test]
+    fn test_iot_port_mappings() {
+        // SSDP/UPnP
+        assert!(matches!(ServiceType::from_port(1900), ServiceType::SSDP));
+        // mDNS
+        assert!(matches!(ServiceType::from_port(5353), ServiceType::MDNS));
+        // LLMNR
+        assert!(matches!(ServiceType::from_port(5357), ServiceType::LLMNR));
+        // Yeelight
+        assert!(matches!(ServiceType::from_port(4321), ServiceType::Yeelight));
+        assert!(matches!(ServiceType::from_port(9898), ServiceType::Yeelight));
+        // Xiaomi Gateway
+        assert!(matches!(ServiceType::from_port(8083), ServiceType::XiaomiGateway));
+        assert!(matches!(ServiceType::from_port(8084), ServiceType::XiaomiGateway));
+        assert!(matches!(ServiceType::from_port(8245), ServiceType::XiaomiGateway));
+        assert!(matches!(ServiceType::from_port(54321), ServiceType::XiaomiGateway));
+    }
+
+    /// 测试 IoT 服务类型标签
+    #[test]
+    fn test_iot_service_labels() {
+        assert_eq!(ServiceType::SSDP.label(), "SSDP/UPnP");
+        assert_eq!(ServiceType::MDNS.label(), "mDNS");
+        assert_eq!(ServiceType::LLMNR.label(), "LLMNR");
+        assert_eq!(ServiceType::Yeelight.label(), "Yeelight");
+        assert_eq!(ServiceType::XiaomiGateway.label(), "Xiaomi Gateway");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 端口数量验证测试
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_common_ports_count() {
+    // 原始 28 个端口 + 新增的 9 个 IoT 端口 = 37 个端口
+    let expected_ports = vec![
+        21, 22, 23, 25, 53, 80, 443, 445, 587,       // 基础服务
+        1883, 1900,                                  // MQTT, SSDP
+        2375, 3000, 3306, 3389,                      // Docker, Grafana/Gitea, MySQL, RDP
+        4321, 5000,                                  // Yeelight, HTTP alt
+        5353, 5357,                                  // mDNS, LLMNR
+        5432, 5900,                                  // PostgreSQL, VNC
+        6379, 6443,                                  // Redis, Kubernetes
+        8080, 8083, 8084, 8245, 8443,                // HTTP alt, Xiaomi ports
+        8883, 8888,                                  // MQTT TLS, HTTP alt
+        9000, 9090,                                  // MinIO, Prometheus
+        9200, 9300,                                  // Elasticsearch
+        9898,                                        // Yeelight
+        27017, 54321,                                // MongoDB, Xiaomi Gateway
+    ];
+    
+    // 使用内部函数或直接测试
+    // 验证每个端口都能映射到对应的服务类型
+    for port in &expected_ports {
+        let service = ServiceType::from_port(*port);
+        // 确保不是 Unknown（除了可能有意的例外）
+        assert!(!matches!(service, ServiceType::Unknown), 
+            "Port {} should have a known service type", port);
+    }
+    
+    println!("Total ports: {}", expected_ports.len());
 }

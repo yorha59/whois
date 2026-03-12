@@ -61,15 +61,55 @@ async fn run_cli_scan(subnet: Option<String>, timeout_ms: Option<u64>) {
         println!("No hosts found.");
     } else {
         // Print table header
-        println!("{:<16} {:<22} {}", "IP Address", "Hostname", "Ports");
-        println!("{}", "-".repeat(70));
+        println!("{:<16} {:<30} {}", "IP Address", "Hostname", "Ports");
+        println!("{}", "-".repeat(90));
 
         // Print results
-        for host in results {
+        for host in &results {
             let hostname = host.hostname.as_deref().unwrap_or("-");
-            let ports: Vec<String> = host.ports.iter().map(|p| p.port.to_string()).collect();
-            let ports_str = ports.join(", ");
-            println!("{:<16} {:<22} {}", host.ip, hostname, ports_str);
+            let ports: Vec<String> = host.ports.iter()
+                .map(|p| format!("{} ({})", p.port, p.service_label))
+                .collect();
+            let ports_str = if ports.is_empty() { "-".to_string() } else { ports.join(", ") };
+            println!("{:<16} {:<30} {}", host.ip, hostname, ports_str);
+        }
+
+        // Print service discovery summary
+        let hosts_with_mdns: Vec<_> = results.iter()
+            .filter(|h| h.mdns_services.as_ref().map(|s| !s.is_empty()).unwrap_or(false))
+            .collect();
+        let hosts_with_ssdp: Vec<_> = results.iter()
+            .filter(|h| h.ssdp_devices.as_ref().map(|d| !d.is_empty()).unwrap_or(false))
+            .collect();
+
+        if !hosts_with_mdns.is_empty() || !hosts_with_ssdp.is_empty() {
+            println!();
+            println!("Service Discovery Results:");
+            println!("{}", "-".repeat(90));
+
+            for host in &hosts_with_mdns {
+                if let Some(services) = &host.mdns_services {
+                    for svc in services {
+                        println!("  [mDNS] {} - {} ({})", host.ip, svc.service_type, svc.name);
+                    }
+                }
+            }
+
+            for host in &hosts_with_ssdp {
+                if let Some(devices) = &host.ssdp_devices {
+                    for dev in devices {
+                        let device_name = if dev.device_type.len() > 40 {
+                            format!("{}...", &dev.device_type[..37])
+                        } else {
+                            dev.device_type.clone()
+                        };
+                        println!("  [SSDP] {} - {}", host.ip, device_name);
+                        if let Some(loc) = &dev.location {
+                            println!("         Location: {}", loc);
+                        }
+                    }
+                }
+            }
         }
     }
 }
