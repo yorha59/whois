@@ -1,25 +1,32 @@
-
 [package]
-name = "rust-net-scanner-backend"
+name = "whois-scanner"
 version = "1.0.0"
-description = "Tauri backend for network scanning"
+description = "Network scanner with CLI and GUI modes"
 authors = ["Engineer"]
 edition = "2021"
 
+# 共享库
 [lib]
-name = "rust_net_scanner_backend"
-crate-type = ["lib", "cdylib", "staticlib"]
+name = "whois_scanner_lib"
 path = "src/lib.rs"
 
+# CLI 二进制
 [[bin]]
-name = "rust-net-scanner-backend"
-path = "src/main.rs"
+name = "whois-cli"
+path = "src/bin/cli.rs"
+required-features = ["cli"]
+
+# Tauri GUI 二进制
+[[bin]]
+name = "whois-gui"
+path = "src/bin/tauri.rs"
+required-features = ["gui"]
 
 [build-dependencies]
-tauri-build = { version = "1.5", features = [] }
+tauri-build = { version = "1.5", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "1.5", features = ["shell-open"] }
+# 共享依赖
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
@@ -27,13 +34,20 @@ futures = "0.3"
 surge-ping = "0.8"
 rand = "0.9"
 
+# GUI 专用依赖
+tauri = { version = "1.5", features = ["shell-open"], optional = true }
+
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.12"
 serial_test = "3.0"
 
 [features]
-# by default Tauri runs in production mode
-# use `custom-protocol` for production builds
-default = ["custom-protocol"]
+default = ["cli"]
+cli = []
+gui = ["tauri", "tauri-build"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "z"
+lto = true
