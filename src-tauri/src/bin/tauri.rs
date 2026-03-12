@@ -4,8 +4,8 @@
 )]
 
 use whois_scanner_lib::{
-    detect_network_internal, export_results_internal, perform_real_scan_internal,
-    HostInfo, NetworkInfo,
+    detect_network_internal, export_results_internal, perform_real_scan_internal, HostInfo,
+    NetworkInfo,
 };
 
 #[tauri::command]

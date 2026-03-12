@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::process::Command;
 use std::sync::Arc;
+use surge_ping::{Client, Config};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
-use surge_ping::{Client, Config};
 
 // ── ARP 扫描：发现 IoT 设备（链路层发现，无法被防火墙阻止） ─────────────────
 
@@ -18,36 +19,57 @@ pub struct ArpEntry {
 }
 
 /// 执行 ARP 扫描发现本地网络中的设备
-/// 使用系统命令 "arp -a" (macOS/Linux) 或 "arp -an" (Linux)
+/// Linux 优先直接读取 `/proc/net/arp`，macOS 优先使用系统自带 `arp`。
 pub fn arp_scan(subnet: &str) -> Vec<ArpEntry> {
-    let mut entries = Vec::new();
-
-    // 尝试不同的 ARP 命令
-    let output = if cfg!(target_os = "macos") {
-        Command::new("arp").arg("-a").output()
-    } else {
-        // Linux
-        Command::new("arp").args(&["-an"]).output()
-    };
-
-    if let Ok(output) = output {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            entries = parse_arp_output(&stdout, subnet);
-        }
+    #[cfg(target_os = "linux")]
+    {
+        return scan_linux_arp_cache(subnet);
     }
 
-    // 如果 arp -a 没有返回结果，尝试 ip neigh (Linux)
-    if entries.is_empty() && cfg!(target_os = "linux") {
-        if let Ok(output) = Command::new("ip").args(&["neigh", "show"]).output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                entries = parse_ip_neigh_output(&stdout, subnet);
-            }
-        }
+    #[cfg(target_os = "macos")]
+    {
+        return scan_macos_arp_cache(subnet);
     }
 
-    entries
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn scan_linux_arp_cache(subnet: &str) -> Vec<ArpEntry> {
+    read_arp_cache_file("/proc/net/arp", subnet, parse_proc_net_arp).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn scan_macos_arp_cache(subnet: &str) -> Vec<ArpEntry> {
+    let command_entries = ["/usr/sbin/arp", "/sbin/arp"]
+        .into_iter()
+        .find_map(|path| run_arp_command(path, &["-an"], subnet));
+
+    command_entries.unwrap_or_else(|| {
+        ["/private/var/run/arp", "/var/run/arp"]
+            .into_iter()
+            .find_map(|path| read_arp_cache_file(path, subnet, parse_arp_output))
+            .unwrap_or_default()
+    })
+}
+
+fn run_arp_command(path: &str, args: &[&str], subnet: &str) -> Option<Vec<ArpEntry>> {
+    let output = Command::new(path).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Some(parse_arp_output(&stdout, subnet))
+}
+
+fn read_arp_cache_file<F>(path: &str, subnet: &str, parser: F) -> Option<Vec<ArpEntry>>
+where
+    F: Fn(&str, &str) -> Vec<ArpEntry>,
+{
+    let contents = fs::read_to_string(path).ok()?;
+    Some(parser(&contents, subnet))
 }
 
 /// 解析 macOS 风格的 arp -a 输出
@@ -70,11 +92,7 @@ pub fn parse_arp_output(output: &str, subnet: &str) -> Vec<ArpEntry> {
                 // 提取 MAC 地址
                 if let Some(at_pos) = line.find("at ") {
                     let after_at = &line[at_pos + 3..];
-                    let mac = after_at
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
+                    let mac = after_at.split_whitespace().next().unwrap_or("").to_string();
 
                     // 验证 MAC 地址格式
                     if mac.len() >= 17 && mac.contains(':') {
@@ -84,11 +102,7 @@ pub fn parse_arp_output(output: &str, subnet: &str) -> Vec<ArpEntry> {
                             .nth(1)
                             .map(|s| s.split_whitespace().next().unwrap_or("").to_string());
 
-                        entries.push(ArpEntry {
-                            ip,
-                            mac,
-                            interface,
-                        });
+                        entries.push(ArpEntry { ip, mac, interface });
                     }
                 }
             }
@@ -132,6 +146,40 @@ pub fn parse_ip_neigh_output(output: &str, subnet: &str) -> Vec<ArpEntry> {
     entries
 }
 
+/// 解析 Linux `/proc/net/arp`
+/// 格式:
+/// IP address       HW type     Flags       HW address            Mask     Device
+/// 192.168.1.1      0x1         0x2         ab:cd:ef:12:34:56     *        eth0
+pub fn parse_proc_net_arp(output: &str, subnet: &str) -> Vec<ArpEntry> {
+    let mut entries = Vec::new();
+
+    for line in output.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 6 {
+            continue;
+        }
+
+        let ip = parts[0];
+        if !ip.starts_with(subnet) {
+            continue;
+        }
+
+        let flags = parts[2];
+        let mac = parts[3];
+        if flags == "0x0" || mac == "00:00:00:00:00:00" || mac == "(incomplete)" {
+            continue;
+        }
+
+        entries.push(ArpEntry {
+            ip: ip.to_string(),
+            mac: mac.to_string(),
+            interface: Some(parts[5].to_string()),
+        });
+    }
+
+    entries
+}
+
 /// 发送 ARP 请求主动发现设备（使用 arping）
 /// 使用并发控制以提高速度，同时避免系统资源耗尽
 pub async fn active_arp_scan(subnet: &str) -> Vec<ArpEntry> {
@@ -146,9 +194,9 @@ pub async fn active_arp_scan(subnet: &str) -> Vec<ArpEntry> {
         handles.push(tokio::spawn(async move {
             let _permit = sem_clone.acquire().await.ok()?;
             // 使用 spawn_blocking 因为 arping 是阻塞的系统调用
-            let result = tokio::task::spawn_blocking(move || {
-                send_arp_request(&ip)
-            }).await.ok()?;
+            let result = tokio::task::spawn_blocking(move || send_arp_request(&ip))
+                .await
+                .ok()?;
             result
         }));
     }
@@ -580,7 +628,12 @@ pub async fn ssdp_discovery(timeout_ms: u64) -> Vec<SsdpDeviceInfo> {
     }
 
     // Remove duplicates based on USN
-    devices.sort_by(|a, b| a.usn.clone().unwrap_or_default().cmp(&b.usn.clone().unwrap_or_default()));
+    devices.sort_by(|a, b| {
+        a.usn
+            .clone()
+            .unwrap_or_default()
+            .cmp(&b.usn.clone().unwrap_or_default())
+    });
     devices.dedup_by(|a, b| a.usn == b.usn && a.ip == b.ip);
 
     devices
@@ -853,10 +906,7 @@ pub fn resolve_hostname(ip: &str) -> Option<String> {
 pub fn dns_lookup_reverse(ip: &str) -> Result<String, ()> {
     use std::process::Command;
     // Use system's `host` command for reverse DNS
-    let output = Command::new("host")
-        .arg(ip)
-        .output()
-        .map_err(|_| ())?;
+    let output = Command::new("host").arg(ip).output().map_err(|_| ())?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -878,13 +928,15 @@ pub fn dns_lookup_reverse(ip: &str) -> Result<String, ()> {
 pub fn detect_network_internal() -> Result<NetworkInfo, String> {
     // Create a UDP socket and "connect" to an external address
     // This doesn't actually send data but lets us find our local IP
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Failed to bind socket: {}", e))?;
+    let socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Failed to bind socket: {}", e))?;
 
-    socket.connect("8.8.8.8:53")
+    socket
+        .connect("8.8.8.8:53")
         .map_err(|e| format!("Failed to connect: {}", e))?;
 
-    let local_addr = socket.local_addr()
+    let local_addr = socket
+        .local_addr()
         .map_err(|e| format!("Failed to get local addr: {}", e))?;
 
     let local_ip = local_addr.ip().to_string();
@@ -893,10 +945,7 @@ pub fn detect_network_internal() -> Result<NetworkInfo, String> {
     let parts: Vec<&str> = local_ip.split('.').collect();
     if parts.len() == 4 {
         let subnet = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
-        Ok(NetworkInfo {
-            local_ip,
-            subnet,
-        })
+        Ok(NetworkInfo { local_ip, subnet })
     } else {
         Err("Invalid IP format".to_string())
     }
@@ -937,7 +986,10 @@ pub async fn perform_real_scan_internal(
     // 因为静态 IP 设备可能没有出现在 ARP 缓存中
     println!("  Active ARP probing (arping) for static IP devices...");
     let active_entries = active_arp_scan(&subnet).await;
-    println!("  Active ARP probe: {} devices responded", active_entries.len());
+    println!(
+        "  Active ARP probe: {} devices responded",
+        active_entries.len()
+    );
 
     // 合并被动和主动 ARP 结果
     let mut all_arp_entries = arp_entries.clone();
@@ -947,13 +999,13 @@ pub async fn perform_real_scan_internal(
             all_arp_entries.push(entry);
         }
     }
-    println!("Phase 1 complete: {} total devices found via ARP", all_arp_entries.len());
+    println!(
+        "Phase 1 complete: {} total devices found via ARP",
+        all_arp_entries.len()
+    );
 
     // 收集 ARP 发现的 IP 地址
-    let mut online_hosts: Vec<String> = all_arp_entries
-        .iter()
-        .map(|e| e.ip.clone())
-        .collect();
+    let mut online_hosts: Vec<String> = all_arp_entries.iter().map(|e| e.ip.clone()).collect();
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 2: ICMP Ping 补充检测（捕获那些 ARP 缓存中没有但有响应的设备）
@@ -990,8 +1042,11 @@ pub async fn perform_real_scan_internal(
         }
     }
 
-    println!("Phase 2 complete: {} new hosts via ICMP ping ({} total online)",
-             icmp_hosts.len(), online_hosts.len());
+    println!(
+        "Phase 2 complete: {} new hosts via ICMP ping ({} total online)",
+        icmp_hosts.len(),
+        online_hosts.len()
+    );
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 3: UDP Service Discovery (mDNS + SSDP)
@@ -1003,7 +1058,10 @@ pub async fn perform_real_scan_internal(
     let mdns_results = mdns_discovery(2000).await;
     println!("  mDNS: Found {} service(s)", mdns_results.len());
     for service in &mdns_results {
-        println!("    - {} ({}) at {:?}", service.service_type, service.name, service.ip);
+        println!(
+            "    - {} ({}) at {:?}",
+            service.service_type, service.name, service.ip
+        );
     }
 
     // Run SSDP discovery
@@ -1033,14 +1091,20 @@ pub async fn perform_real_scan_internal(
         entry.ssdp_devices.push(device);
     }
 
-    println!("Phase 3 complete: {} host(s) with discovered services", services_by_ip.len());
+    println!(
+        "Phase 3 complete: {} host(s) with discovered services",
+        services_by_ip.len()
+    );
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 4: 对发现的设备进行端口扫描
     // ═══════════════════════════════════════════════════════════════════════════
 
-    println!("Phase 4: Port scanning {} hosts with {} common ports...",
-             online_hosts.len(), ports_to_scan.len());
+    println!(
+        "Phase 4: Port scanning {} hosts with {} common ports...",
+        online_hosts.len(),
+        ports_to_scan.len()
+    );
     println!("  Port list: {:?}", ports_to_scan);
 
     // Create semaphore to limit concurrent connections
@@ -1094,8 +1158,13 @@ pub async fn perform_real_scan_internal(
                         let result = scan_port(ip_clone, port, timeout_ms).await;
                         // 调试输出：显示每个端口的扫描结果
                         match &result {
-                            Some(info) => println!("      [DEBUG] {}:{} - OPEN ({})", ip_clone, port, info.service_label),
-                            None => println!("      [DEBUG] {}:{} - closed/filtered", ip_clone, port),
+                            Some(info) => println!(
+                                "      [DEBUG] {}:{} - OPEN ({})",
+                                ip_clone, port, info.service_label
+                            ),
+                            None => {
+                                println!("      [DEBUG] {}:{} - closed/filtered", ip_clone, port)
+                            }
                         }
                         result
                     }));
@@ -1115,23 +1184,35 @@ pub async fn perform_real_scan_internal(
             let hostname = resolve_hostname(&ip_str);
 
             // Get discovered services for this host
-            let (mdns_services, ssdp_devices) = if let Some(discovered) = services_clone.get(&ip_str) {
-                (Some(discovered.mdns_services.clone()), Some(discovered.ssdp_devices.clone()))
-            } else {
-                (None, None)
-            };
+            let (mdns_services, ssdp_devices) =
+                if let Some(discovered) = services_clone.get(&ip_str) {
+                    (
+                        Some(discovered.mdns_services.clone()),
+                        Some(discovered.ssdp_devices.clone()),
+                    )
+                } else {
+                    (None, None)
+                };
 
             // 更新进度并报告发现的端口
             let current = count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             if !found_ports.is_empty() {
-                let port_list: Vec<String> = found_ports.iter()
+                let port_list: Vec<String> = found_ports
+                    .iter()
                     .map(|p| format!("{}:{}", p.port, p.service_label))
                     .collect();
-                println!("    [{}/{}] {} - found ports: {}",
-                         current, total_hosts, ip_str, port_list.join(", "));
+                println!(
+                    "    [{}/{}] {} - found ports: {}",
+                    current,
+                    total_hosts,
+                    ip_str,
+                    port_list.join(", ")
+                );
             } else {
-                println!("    [{}/{}] {} - no open ports found",
-                         current, total_hosts, ip_str);
+                println!(
+                    "    [{}/{}] {} - no open ports found",
+                    current, total_hosts, ip_str
+                );
             }
 
             Some(HostInfo {
@@ -1165,10 +1246,8 @@ pub async fn perform_real_scan_internal(
 
 pub fn export_results_internal(results: Vec<HostInfo>, format: String) -> Result<String, String> {
     match format.as_str() {
-        "json" => {
-            serde_json::to_string_pretty(&results)
-                .map_err(|e| format!("JSON serialization failed: {}", e))
-        }
+        "json" => serde_json::to_string_pretty(&results)
+            .map_err(|e| format!("JSON serialization failed: {}", e)),
         "csv" => {
             let mut csv = String::from("IP,Hostname,Port,Service\n");
             for host in &results {
@@ -1177,17 +1256,21 @@ pub fn export_results_internal(results: Vec<HostInfo>, format: String) -> Result
                     csv.push_str(&format!("{},{},–,–\n", host.ip, hostname));
                 } else {
                     for port in &host.ports {
-                        csv.push_str(&format!("{},{},{},{}\n",
-                            host.ip, hostname, port.port, port.service_label));
+                        csv.push_str(&format!(
+                            "{},{},{},{}\n",
+                            host.ip, hostname, port.port, port.service_label
+                        ));
                     }
                 }
             }
             Ok(csv)
         }
-        _ => Err(format!("Unsupported format: {}. Use 'json' or 'csv'.", format)),
+        _ => Err(format!(
+            "Unsupported format: {}. Use 'json' or 'csv'.",
+            format
+        )),
     }
 }
-
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 

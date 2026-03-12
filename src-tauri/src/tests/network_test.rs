@@ -5,7 +5,9 @@
 //!
 //! 注意：部分测试需要网络接口，使用条件编译处理
 
-use crate::{detect_network_internal as detect_network, NetworkInfo, resolve_hostname, dns_lookup_reverse};
+use crate::{
+    detect_network_internal as detect_network, dns_lookup_reverse, resolve_hostname, NetworkInfo,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase 1.2: 网络检测成功场景测试
@@ -22,14 +24,20 @@ fn test_detect_network_success() {
         let network_info = result.unwrap();
 
         // 验证返回的 IP 格式
-        assert!(!network_info.local_ip.is_empty(), "Local IP should not be empty");
+        assert!(
+            !network_info.local_ip.is_empty(),
+            "Local IP should not be empty"
+        );
         assert!(
             network_info.local_ip.contains('.'),
             "Local IP should be IPv4 format"
         );
 
         // 验证子网格式
-        assert!(!network_info.subnet.is_empty(), "Subnet should not be empty");
+        assert!(
+            !network_info.subnet.is_empty(),
+            "Subnet should not be empty"
+        );
         let parts: Vec<&str> = network_info.subnet.split('.').collect();
         assert_eq!(parts.len(), 3, "Subnet should have 3 octets (x.x.x)");
 
@@ -206,11 +214,7 @@ fn test_resolve_hostname_malformed_ip() {
 
     for ip in malformed_ips {
         let result = resolve_hostname(ip);
-        assert!(
-            result.is_none(),
-            "Malformed IP '{}' should return None",
-            ip
-        );
+        assert!(result.is_none(), "Malformed IP '{}' should return None", ip);
     }
 }
 
@@ -274,10 +278,10 @@ fn test_detect_network_error_handling() {
 fn test_network_info_invalid_ip_format() {
     // 测试不符合 /24 子网的 IP（未来可能支持 /16、/8 等）
     let unusual_ips = vec![
-        "10.0.0.1.1",      // 5 个八位组
-        "192.168",         // 2 个八位组
-        "192",             // 1 个八位组
-        "192.168.1.1/24",  // 带 CIDR 表示法（虽然 parse 会失败）
+        "10.0.0.1.1",     // 5 个八位组
+        "192.168",        // 2 个八位组
+        "192",            // 1 个八位组
+        "192.168.1.1/24", // 带 CIDR 表示法（虽然 parse 会失败）
     ];
 
     for ip in unusual_ips {
@@ -350,10 +354,7 @@ mod integration_tests {
         use crate::detect_network_internal as detect_network;
 
         let result = detect_network();
-        assert!(
-            result.is_ok(),
-            "Should detect network in real environment"
-        );
+        assert!(result.is_ok(), "Should detect network in real environment");
 
         let info = result.unwrap();
         println!("Detected local IP: {}", info.local_ip);

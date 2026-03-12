@@ -1,8 +1,7 @@
-use whois_scanner_lib::{
-    detect_network_internal, perform_real_scan_internal,
-    HostInfo, NetworkInfo, ScanConfig,
-};
 use std::env;
+use whois_scanner_lib::{
+    detect_network_internal, perform_real_scan_internal, HostInfo, NetworkInfo, ScanConfig,
+};
 
 /// CLI scanning mode - prints results as a formatted table
 async fn run_cli_scan(subnet: Option<String>, timeout_ms: Option<u64>) {
@@ -18,7 +17,10 @@ async fn run_cli_scan(subnet: Option<String>, timeout_ms: Option<u64>) {
             }
             Err(e) => {
                 eprintln!("Error detecting network: {}", e);
-                eprintln!("Usage: {} --scan --subnet 192.168.1", env::args().next().unwrap());
+                eprintln!(
+                    "Usage: {} --scan --subnet 192.168.1",
+                    env::args().next().unwrap()
+                );
                 std::process::exit(1);
             }
         },
@@ -47,19 +49,37 @@ async fn run_cli_scan(subnet: Option<String>, timeout_ms: Option<u64>) {
         // Print results
         for host in &results {
             let hostname = host.hostname.as_deref().unwrap_or("-");
-            let ports: Vec<String> = host.ports.iter()
+            let ports: Vec<String> = host
+                .ports
+                .iter()
                 .map(|p| format!("{} ({})", p.port, p.service_label))
                 .collect();
-            let ports_str = if ports.is_empty() { "-".to_string() } else { ports.join(", ") };
+            let ports_str = if ports.is_empty() {
+                "-".to_string()
+            } else {
+                ports.join(", ")
+            };
             println!("{:<16} {:<30} {}", host.ip, hostname, ports_str);
         }
 
         // Print service discovery summary
-        let hosts_with_mdns: Vec<_> = results.iter()
-            .filter(|h| h.mdns_services.as_ref().map(|s| !s.is_empty()).unwrap_or(false))
+        let hosts_with_mdns: Vec<_> = results
+            .iter()
+            .filter(|h| {
+                h.mdns_services
+                    .as_ref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
+            })
             .collect();
-        let hosts_with_ssdp: Vec<_> = results.iter()
-            .filter(|h| h.ssdp_devices.as_ref().map(|d| !d.is_empty()).unwrap_or(false))
+        let hosts_with_ssdp: Vec<_> = results
+            .iter()
+            .filter(|h| {
+                h.ssdp_devices
+                    .as_ref()
+                    .map(|d| !d.is_empty())
+                    .unwrap_or(false)
+            })
             .collect();
 
         if !hosts_with_mdns.is_empty() || !hosts_with_ssdp.is_empty() {

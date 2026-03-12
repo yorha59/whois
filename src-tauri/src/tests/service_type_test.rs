@@ -34,20 +34,38 @@ fn test_service_type_from_port_registered_ports() {
     assert!(matches!(ServiceType::from_port(3306), ServiceType::MySQL));
     assert!(matches!(ServiceType::from_port(3389), ServiceType::RDP));
     assert!(matches!(ServiceType::from_port(5000), ServiceType::HTTP));
-    assert!(matches!(ServiceType::from_port(5432), ServiceType::PostgreSQL));
+    assert!(matches!(
+        ServiceType::from_port(5432),
+        ServiceType::PostgreSQL
+    ));
     assert!(matches!(ServiceType::from_port(5900), ServiceType::VNC));
     assert!(matches!(ServiceType::from_port(5901), ServiceType::VNC));
     assert!(matches!(ServiceType::from_port(6379), ServiceType::Redis));
-    assert!(matches!(ServiceType::from_port(6443), ServiceType::Kubernetes));
+    assert!(matches!(
+        ServiceType::from_port(6443),
+        ServiceType::Kubernetes
+    ));
     assert!(matches!(ServiceType::from_port(8080), ServiceType::HTTP));
     assert!(matches!(ServiceType::from_port(8443), ServiceType::HTTP));
     assert!(matches!(ServiceType::from_port(8888), ServiceType::HTTP));
     assert!(matches!(ServiceType::from_port(5173), ServiceType::HTTP));
     assert!(matches!(ServiceType::from_port(9000), ServiceType::MinIO));
-    assert!(matches!(ServiceType::from_port(9090), ServiceType::Prometheus));
-    assert!(matches!(ServiceType::from_port(9200), ServiceType::Elasticsearch));
-    assert!(matches!(ServiceType::from_port(9300), ServiceType::Elasticsearch));
-    assert!(matches!(ServiceType::from_port(27017), ServiceType::MongoDB));
+    assert!(matches!(
+        ServiceType::from_port(9090),
+        ServiceType::Prometheus
+    ));
+    assert!(matches!(
+        ServiceType::from_port(9200),
+        ServiceType::Elasticsearch
+    ));
+    assert!(matches!(
+        ServiceType::from_port(9300),
+        ServiceType::Elasticsearch
+    ));
+    assert!(matches!(
+        ServiceType::from_port(27017),
+        ServiceType::MongoDB
+    ));
 }
 
 #[test]
@@ -72,15 +90,27 @@ fn test_service_type_from_port_unknown() {
     assert!(matches!(ServiceType::from_port(1), ServiceType::Unknown));
     assert!(matches!(ServiceType::from_port(1024), ServiceType::Unknown));
     assert!(matches!(ServiceType::from_port(9999), ServiceType::Unknown));
-    assert!(matches!(ServiceType::from_port(49152), ServiceType::Unknown));
-    assert!(matches!(ServiceType::from_port(65535), ServiceType::Unknown));
+    assert!(matches!(
+        ServiceType::from_port(49152),
+        ServiceType::Unknown
+    ));
+    assert!(matches!(
+        ServiceType::from_port(65535),
+        ServiceType::Unknown
+    ));
 }
 
 #[test]
 fn test_service_type_from_port_boundary_cases() {
     // 边界测试：u16 最大值
-    assert!(matches!(ServiceType::from_port(u16::MAX), ServiceType::Unknown));
-    assert!(matches!(ServiceType::from_port(65535), ServiceType::Unknown));
+    assert!(matches!(
+        ServiceType::from_port(u16::MAX),
+        ServiceType::Unknown
+    ));
+    assert!(matches!(
+        ServiceType::from_port(65535),
+        ServiceType::Unknown
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -101,7 +101,11 @@ fn test_export_json_multiple_hosts() {
                 create_test_port(443, ServiceType::HTTPS),
             ],
         ),
-        create_test_host("192.168.1.200", None, vec![create_test_port(3306, ServiceType::MySQL)]),
+        create_test_host(
+            "192.168.1.200",
+            None,
+            vec![create_test_port(3306, ServiceType::MySQL)],
+        ),
     ];
 
     let result = export_results(results, "json".to_string());
@@ -310,10 +314,16 @@ fn test_export_format_case_sensitivity() {
 
     // 测试大写格式（当前实现是大小写敏感的）
     let result = export_results(results.clone(), "JSON".to_string());
-    assert!(result.is_err(), "Current implementation is case-sensitive for JSON");
+    assert!(
+        result.is_err(),
+        "Current implementation is case-sensitive for JSON"
+    );
 
     let result = export_results(results, "CSV".to_string());
-    assert!(result.is_err(), "Current implementation is case-sensitive for CSV");
+    assert!(
+        result.is_err(),
+        "Current implementation is case-sensitive for CSV"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -382,8 +392,14 @@ fn test_export_json_pretty_format() {
 
     let json = result.unwrap();
     // 验证是 pretty-printed JSON
-    assert!(json.contains('\n'), "JSON should be pretty-printed with newlines");
-    assert!(json.contains("  "), "JSON should be pretty-printed with indentation");
+    assert!(
+        json.contains('\n'),
+        "JSON should be pretty-printed with newlines"
+    );
+    assert!(
+        json.contains("  "),
+        "JSON should be pretty-printed with indentation"
+    );
 }
 
 #[test]

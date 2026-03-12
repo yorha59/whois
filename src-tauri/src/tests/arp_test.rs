@@ -4,7 +4,8 @@
 //! 覆盖率目标：80%+
 
 use crate::{
-    arp_scan, parse_arp_output, parse_arping_output, parse_ip_neigh_output, active_arp_scan, ArpEntry,
+    active_arp_scan, arp_scan, parse_arp_output, parse_arping_output, parse_ip_neigh_output,
+    parse_proc_net_arp, ArpEntry,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -127,6 +128,35 @@ malformed line
     assert_eq!(entries[0].ip, "192.168.1.1");
 }
 
+#[test]
+fn test_parse_proc_net_arp() {
+    let output = r#"IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1       0x1         0x2         ab:cd:ef:12:34:56     *        eth0
+192.168.1.50      0x1         0x2         11:22:33:44:55:66     *        wlan0
+10.0.0.1          0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth1"#;
+
+    let entries = parse_proc_net_arp(output, "192.168.1");
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].ip, "192.168.1.1");
+    assert_eq!(entries[0].mac, "ab:cd:ef:12:34:56");
+    assert_eq!(entries[0].interface, Some("eth0".to_string()));
+    assert_eq!(entries[1].interface, Some("wlan0".to_string()));
+}
+
+#[test]
+fn test_parse_proc_net_arp_skips_incomplete_entries() {
+    let output = r#"IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1       0x1         0x0         00:00:00:00:00:00     *        eth0
+192.168.1.2       0x1         0x2         (incomplete)          *        eth0
+192.168.1.3       0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth0"#;
+
+    let entries = parse_proc_net_arp(output, "192.168.1");
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].ip, "192.168.1.3");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase 3: arping 输出解析测试
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -219,8 +249,8 @@ fn test_mac_address_format_variations() {
         ("ab:cd:ef:12:34:56", true),
         ("AB:CD:EF:12:34:56", true),
         ("ab-cd-ef-12-34-56", false), // 我们的解析器使用冒号分隔
-        ("abcdef123456", false),       // 没有分隔符
-        ("incomplete", false),         // 无效值
+        ("abcdef123456", false),      // 没有分隔符
+        ("incomplete", false),        // 无效值
     ];
 
     for (mac, should_be_valid) in test_cases {
@@ -294,9 +324,10 @@ async fn test_active_arp_scan_concurrent() {
     // 主动 ARP 扫描应该并发执行，快速返回
     let start = std::time::Instant::now();
     let result = timeout(
-        Duration::from_secs(30),  // 设置一个合理的超时
-        active_arp_scan("192.0.2")  // 使用 TEST-NET-1 子网进行测试
-    ).await;
+        Duration::from_secs(30),    // 设置一个合理的超时
+        active_arp_scan("192.0.2"), // 使用 TEST-NET-1 子网进行测试
+    )
+    .await;
 
     let elapsed = start.elapsed();
 
@@ -309,5 +340,8 @@ async fn test_active_arp_scan_concurrent() {
         elapsed
     );
 
-    println!("Active ARP scan completed in {:?}, result: {:?}", elapsed, result);
+    println!(
+        "Active ARP scan completed in {:?}, result: {:?}",
+        elapsed, result
+    );
 }

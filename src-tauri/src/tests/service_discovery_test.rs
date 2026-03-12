@@ -5,8 +5,8 @@
 
 use crate::{
     build_mdns_query, build_ssdp_search, discover_services_for_host, mdns_discovery,
-    parse_mdns_response, parse_ssdp_response, ssdp_discovery, MdnsServiceInfo, SsdpDeviceInfo,
-    ServiceDiscoveryResult,
+    parse_mdns_response, parse_ssdp_response, ssdp_discovery, MdnsServiceInfo,
+    ServiceDiscoveryResult, SsdpDeviceInfo,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -141,13 +141,19 @@ fn test_parse_ssdp_response_valid() {
     assert!(result.is_some());
 
     let device = result.unwrap();
-    assert_eq!(device.device_type, "urn:schemas-upnp-org:device:InternetGatewayDevice:1");
+    assert_eq!(
+        device.device_type,
+        "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
+    );
     assert_eq!(device.ip, "192.168.1.1");
     assert_eq!(
         device.location,
         Some("http://192.168.1.1:5000/rootDesc.xml".to_string())
     );
-    assert_eq!(device.server, Some("Linux/4.0 UPnP/1.1 MiniUPnPd/2.0".to_string()));
+    assert_eq!(
+        device.server,
+        Some("Linux/4.0 UPnP/1.1 MiniUPnPd/2.0".to_string())
+    );
     assert_eq!(
         device.usn,
         Some("uuid:device-001::urn:schemas-upnp-org:device:InternetGatewayDevice:1".to_string())
@@ -199,9 +205,18 @@ fn test_ssdp_device_info_creation() {
         ip: "192.168.1.100".to_string(),
     };
 
-    assert_eq!(device.device_type, "urn:schemas-upnp-org:device:MediaServer:1");
-    assert_eq!(device.location, Some("http://192.168.1.100:9000/desc".to_string()));
-    assert_eq!(device.server, Some("Linux/5.0 UPnP/1.0 DLNADOC/1.50".to_string()));
+    assert_eq!(
+        device.device_type,
+        "urn:schemas-upnp-org:device:MediaServer:1"
+    );
+    assert_eq!(
+        device.location,
+        Some("http://192.168.1.100:9000/desc".to_string())
+    );
+    assert_eq!(
+        device.server,
+        Some("Linux/5.0 UPnP/1.0 DLNADOC/1.50".to_string())
+    );
     assert_eq!(device.usn, Some("uuid:media-server-001".to_string()));
     assert_eq!(device.ip, "192.168.1.100");
 }
@@ -306,8 +321,7 @@ fn test_xiaomi_device_parsing() {
 #[test]
 fn test_yeelight_device_parsing() {
     // 测试 Yeelight 设备信息的解析
-    let yeelight_response =
-        b"\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x00_yeelight._tcp.local";
+    let yeelight_response = b"\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x00_yeelight._tcp.local";
 
     let services = parse_mdns_response(yeelight_response, "192.168.1.51");
 

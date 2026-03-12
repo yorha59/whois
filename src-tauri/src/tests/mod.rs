@@ -1,11 +1,11 @@
 //! Unit tests for WhoIs scanner backend
 
 pub mod arp_test;
-pub mod ping_test;
-pub mod service_type_test;
 pub mod export_test;
 pub mod network_test;
+pub mod ping_test;
 pub mod service_discovery_test;
+pub mod service_type_test;
 
 use crate::{export_results_internal as export_results, HostInfo, PortInfo, ServiceType};
 
@@ -21,9 +21,15 @@ fn test_service_type_from_port() {
     assert!(matches!(ServiceType::from_port(25), ServiceType::SMTP));
     assert!(matches!(ServiceType::from_port(53), ServiceType::DNS));
     assert!(matches!(ServiceType::from_port(3306), ServiceType::MySQL));
-    assert!(matches!(ServiceType::from_port(5432), ServiceType::PostgreSQL));
+    assert!(matches!(
+        ServiceType::from_port(5432),
+        ServiceType::PostgreSQL
+    ));
     assert!(matches!(ServiceType::from_port(6379), ServiceType::Redis));
-    assert!(matches!(ServiceType::from_port(27017), ServiceType::MongoDB));
+    assert!(matches!(
+        ServiceType::from_port(27017),
+        ServiceType::MongoDB
+    ));
     assert!(matches!(ServiceType::from_port(3389), ServiceType::RDP));
     assert!(matches!(ServiceType::from_port(445), ServiceType::SMB));
 
@@ -205,7 +211,7 @@ fn test_detect_network_subnet() {
     fn extract_subnet(ip: &str) -> Option<String> {
         let parts: Vec<&str> = ip.split('.').collect();
         if parts.len() == 4 {
-            Some(format!("{}.{}.{}" ,parts[0], parts[1], parts[2]))
+            Some(format!("{}.{}.{}", parts[0], parts[1], parts[2]))
         } else {
             None
         }
@@ -216,20 +222,14 @@ fn test_detect_network_subnet() {
         extract_subnet("192.168.1.100"),
         Some("192.168.1".to_string())
     );
-    assert_eq!(
-        extract_subnet("10.0.0.1"),
-        Some("10.0.0".to_string())
-    );
+    assert_eq!(extract_subnet("10.0.0.1"), Some("10.0.0".to_string()));
     assert_eq!(
         extract_subnet("172.16.255.254"),
         Some("172.16.255".to_string())
     );
 
     // Test edge cases
-    assert_eq!(
-        extract_subnet("0.0.0.0"),
-        Some("0.0.0".to_string())
-    );
+    assert_eq!(extract_subnet("0.0.0.0"), Some("0.0.0".to_string()));
     assert_eq!(
         extract_subnet("255.255.255.255"),
         Some("255.255.255".to_string())
@@ -284,13 +284,31 @@ mod iot_port_test {
         // LLMNR
         assert!(matches!(ServiceType::from_port(5357), ServiceType::LLMNR));
         // Yeelight
-        assert!(matches!(ServiceType::from_port(4321), ServiceType::Yeelight));
-        assert!(matches!(ServiceType::from_port(9898), ServiceType::Yeelight));
+        assert!(matches!(
+            ServiceType::from_port(4321),
+            ServiceType::Yeelight
+        ));
+        assert!(matches!(
+            ServiceType::from_port(9898),
+            ServiceType::Yeelight
+        ));
         // Xiaomi Gateway
-        assert!(matches!(ServiceType::from_port(8083), ServiceType::XiaomiGateway));
-        assert!(matches!(ServiceType::from_port(8084), ServiceType::XiaomiGateway));
-        assert!(matches!(ServiceType::from_port(8245), ServiceType::XiaomiGateway));
-        assert!(matches!(ServiceType::from_port(54321), ServiceType::XiaomiGateway));
+        assert!(matches!(
+            ServiceType::from_port(8083),
+            ServiceType::XiaomiGateway
+        ));
+        assert!(matches!(
+            ServiceType::from_port(8084),
+            ServiceType::XiaomiGateway
+        ));
+        assert!(matches!(
+            ServiceType::from_port(8245),
+            ServiceType::XiaomiGateway
+        ));
+        assert!(matches!(
+            ServiceType::from_port(54321),
+            ServiceType::XiaomiGateway
+        ));
     }
 
     /// 测试 IoT 服务类型标签
@@ -312,29 +330,32 @@ mod iot_port_test {
 fn test_common_ports_count() {
     // 原始 28 个端口 + 新增的 9 个 IoT 端口 = 37 个端口
     let expected_ports = vec![
-        21, 22, 23, 25, 53, 80, 443, 445, 587,       // 基础服务
-        1883, 1900,                                  // MQTT, SSDP
-        2375, 3000, 3306, 3389,                      // Docker, Grafana/Gitea, MySQL, RDP
-        4321, 5000,                                  // Yeelight, HTTP alt
-        5353, 5357,                                  // mDNS, LLMNR
-        5432, 5900,                                  // PostgreSQL, VNC
-        6379, 6443,                                  // Redis, Kubernetes
-        8080, 8083, 8084, 8245, 8443,                // HTTP alt, Xiaomi ports
-        8883, 8888,                                  // MQTT TLS, HTTP alt
-        9000, 9090,                                  // MinIO, Prometheus
-        9200, 9300,                                  // Elasticsearch
-        9898,                                        // Yeelight
-        27017, 54321,                                // MongoDB, Xiaomi Gateway
+        21, 22, 23, 25, 53, 80, 443, 445, 587, // 基础服务
+        1883, 1900, // MQTT, SSDP
+        2375, 3000, 3306, 3389, // Docker, Grafana/Gitea, MySQL, RDP
+        4321, 5000, // Yeelight, HTTP alt
+        5353, 5357, // mDNS, LLMNR
+        5432, 5900, // PostgreSQL, VNC
+        6379, 6443, // Redis, Kubernetes
+        8080, 8083, 8084, 8245, 8443, // HTTP alt, Xiaomi ports
+        8883, 8888, // MQTT TLS, HTTP alt
+        9000, 9090, // MinIO, Prometheus
+        9200, 9300, // Elasticsearch
+        9898, // Yeelight
+        27017, 54321, // MongoDB, Xiaomi Gateway
     ];
-    
+
     // 使用内部函数或直接测试
     // 验证每个端口都能映射到对应的服务类型
     for port in &expected_ports {
         let service = ServiceType::from_port(*port);
         // 确保不是 Unknown（除了可能有意的例外）
-        assert!(!matches!(service, ServiceType::Unknown), 
-            "Port {} should have a known service type", port);
+        assert!(
+            !matches!(service, ServiceType::Unknown),
+            "Port {} should have a known service type",
+            port
+        );
     }
-    
+
     println!("Total ports: {}", expected_ports.len());
 }

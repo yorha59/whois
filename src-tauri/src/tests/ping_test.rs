@@ -64,12 +64,7 @@ async fn test_ping_ipv6() {
 async fn test_ping_private_ips() {
     // 这些只是格式测试，实际上 ping 可能超时
     // 主要验证函数能正确解析这些 IP 格式
-    let private_ips = vec![
-        "192.168.1.1",
-        "10.0.0.1",
-        "172.16.0.1",
-        "172.31.255.255",
-    ];
+    let private_ips = vec!["192.168.1.1", "10.0.0.1", "172.16.0.1", "172.31.255.255"];
 
     for ip in private_ips {
         // 这些 IP 格式是正确的，但由于超时或不可达，可能返回 true 或 false
@@ -82,12 +77,7 @@ async fn test_ping_private_ips() {
 /// 测试 ping 边界情况 IP
 #[tokio::test]
 async fn test_ping_edge_case_ips() {
-    let edge_cases = vec![
-        "0.0.0.0",
-        "0.0.0.1",
-        "255.255.255.255",
-        "255.255.255.0",
-    ];
+    let edge_cases = vec!["0.0.0.0", "0.0.0.1", "255.255.255.255", "255.255.255.0"];
 
     for ip in edge_cases {
         // 这些 IP 格式正确，主要验证不会 panic
@@ -103,12 +93,7 @@ async fn test_ping_edge_case_ips() {
 /// 测试并发 ping 多个主机
 #[tokio::test]
 async fn test_ping_concurrent() {
-    let ips = vec![
-        "127.0.0.1",
-        "192.168.1.1",
-        "192.168.1.2",
-        "192.168.1.3",
-    ];
+    let ips = vec!["127.0.0.1", "192.168.1.1", "192.168.1.2", "192.168.1.3"];
 
     let mut handles = vec![];
     for ip in ips {
@@ -144,7 +129,10 @@ async fn test_ping_timeout() {
         "Ping should return quickly due to 500ms timeout"
     );
 
-    println!("Ping timeout test completed in {:?}, result: {:?}", elapsed, result);
+    println!(
+        "Ping timeout test completed in {:?}, result: {:?}",
+        elapsed, result
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -182,8 +170,9 @@ async fn test_ping_with_retries_timeout() {
     let start = std::time::Instant::now();
     let result = timeout(
         Duration::from_secs(5),
-        ping_host_with_retries("192.0.2.1", 300, 1) // 300ms 超时，1 次重试
-    ).await;
+        ping_host_with_retries("192.0.2.1", 300, 1), // 300ms 超时，1 次重试
+    )
+    .await;
     let elapsed = start.elapsed();
 
     // 应该快速返回（300ms × 2 次尝试 + 50ms 延迟 ≈ 650ms）
@@ -193,7 +182,10 @@ async fn test_ping_with_retries_timeout() {
         elapsed
     );
 
-    println!("Ping with retries timeout test completed in {:?}, result: {:?}", elapsed, result);
+    println!(
+        "Ping with retries timeout test completed in {:?}, result: {:?}",
+        elapsed, result
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -211,8 +203,8 @@ mod integration_tests {
     async fn test_ping_real_hosts() {
         // 测试一些公共 DNS 服务器
         let public_dns = vec![
-            "8.8.8.8",    // Google DNS
-            "1.1.1.1",    // Cloudflare DNS
+            "8.8.8.8",         // Google DNS
+            "1.1.1.1",         // Cloudflare DNS
             "114.114.114.114", // 114 DNS
         ];
 
@@ -228,10 +220,7 @@ mod integration_tests {
     #[tokio::test]
     #[ignore]
     async fn test_ping_with_retries_real_hosts() {
-        let public_dns = vec![
-            "8.8.8.8",
-            "1.1.1.1",
-        ];
+        let public_dns = vec!["8.8.8.8", "1.1.1.1"];
 
         for ip in public_dns {
             // 使用更短的超时但更多重试
