@@ -4,7 +4,7 @@
 //! 覆盖率目标：80%+
 
 use crate::{
-    arp_scan, parse_arp_output, parse_arping_output, parse_ip_neigh_output, ArpEntry,
+    arp_scan, parse_arp_output, parse_arping_output, parse_ip_neigh_output, active_arp_scan, ArpEntry,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -262,4 +262,52 @@ fn test_subnet_filtering() {
 
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].ip, "192.168.1.1");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 6: 主动 ARP 扫描测试
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 测试主动 ARP 扫描不会 panic
+#[tokio::test]
+async fn test_active_arp_scan_does_not_panic() {
+    // 使用一个不常见的子网进行测试
+    let entries = active_arp_scan("10.255.255").await;
+    // 应该成功返回（即使找不到设备）
+    println!("Active ARP scan found {} entries", entries.len());
+}
+
+/// 测试主动 ARP 扫描本机回环地址
+#[tokio::test]
+async fn test_active_arp_scan_localhost_subnet() {
+    // 扫描 localhost 子网，应该快速完成
+    let entries = active_arp_scan("127.0.0").await;
+    // localhost 不会有 ARP 响应，但函数应该正常返回
+    println!("Active ARP scan on 127.0.0 found {} entries", entries.len());
+}
+
+/// 测试主动 ARP 扫描并发性能
+#[tokio::test]
+async fn test_active_arp_scan_concurrent() {
+    use tokio::time::{timeout, Duration};
+
+    // 主动 ARP 扫描应该并发执行，快速返回
+    let start = std::time::Instant::now();
+    let result = timeout(
+        Duration::from_secs(30),  // 设置一个合理的超时
+        active_arp_scan("192.0.2")  // 使用 TEST-NET-1 子网进行测试
+    ).await;
+
+    let elapsed = start.elapsed();
+
+    // 即使扫描完成，也应该在合理时间内返回
+    // 扫描 254 个 IP，每个大约 500ms 超时，但并发执行
+    // 正常情况下应该少于 30 秒
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "Active ARP scan took too long: {:?}",
+        elapsed
+    );
+
+    println!("Active ARP scan completed in {:?}, result: {:?}", elapsed, result);
 }

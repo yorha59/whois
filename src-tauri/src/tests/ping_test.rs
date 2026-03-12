@@ -1,6 +1,6 @@
 //! ICMP Ping 主机存活检测测试
 
-use crate::ping_host;
+use crate::{ping_host, ping_host_with_retries};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase 1.3: ICMP Ping 基础测试
@@ -148,6 +148,55 @@ async fn test_ping_timeout() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Phase 1.3: 带重试的 ping 测试
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 测试带重试的 ping localhost（应该成功）
+#[tokio::test]
+async fn test_ping_with_retries_localhost() {
+    // 127.0.0.1 应该总是响应 ping，使用重试机制
+    let result = ping_host_with_retries("127.0.0.1", 500, 2).await;
+    println!("Ping with retries 127.0.0.1: {}", result);
+}
+
+/// 测试带重试的 ping 无效 IP
+#[tokio::test]
+async fn test_ping_with_retries_invalid_ip() {
+    let result = ping_host_with_retries("invalid_ip", 500, 2).await;
+    assert!(!result, "Invalid IP should return false even with retries");
+}
+
+/// 测试带重试的 ping IPv6（暂不支持）
+#[tokio::test]
+async fn test_ping_with_retries_ipv6() {
+    let result = ping_host_with_retries("::1", 500, 2).await;
+    assert!(!result, "IPv6 should return false (not supported yet)");
+}
+
+/// 测试 ping 重试机制的超时行为
+#[tokio::test]
+async fn test_ping_with_retries_timeout() {
+    use tokio::time::{timeout, Duration};
+
+    // 使用一个不太可能响应的 IP，设置较短的超时和较少的重试
+    let start = std::time::Instant::now();
+    let result = timeout(
+        Duration::from_secs(5),
+        ping_host_with_retries("192.0.2.1", 300, 1) // 300ms 超时，1 次重试
+    ).await;
+    let elapsed = start.elapsed();
+
+    // 应该快速返回（300ms × 2 次尝试 + 50ms 延迟 ≈ 650ms）
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "Ping with retries should return quickly: elapsed {:?}",
+        elapsed
+    );
+
+    println!("Ping with retries timeout test completed in {:?}, result: {:?}", elapsed, result);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Phase 1.3: 集成测试（需要实际网络环境）
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -172,6 +221,22 @@ mod integration_tests {
             println!("Ping {}: {}", ip, result);
             // 如果网络正常，这些应该返回 true
             // 但由于网络环境不同，不做强制断言
+        }
+    }
+
+    /// 集成测试：使用重试机制 ping 实际的主机
+    #[tokio::test]
+    #[ignore]
+    async fn test_ping_with_retries_real_hosts() {
+        let public_dns = vec![
+            "8.8.8.8",
+            "1.1.1.1",
+        ];
+
+        for ip in public_dns {
+            // 使用更短的超时但更多重试
+            let result = ping_host_with_retries(ip, 300, 3).await;
+            println!("Ping with retries {}: {}", ip, result);
         }
     }
 }

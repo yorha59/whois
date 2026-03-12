@@ -133,15 +133,23 @@ pub fn parse_ip_neigh_output(output: &str, subnet: &str) -> Vec<ArpEntry> {
 }
 
 /// 发送 ARP 请求主动发现设备（使用 arping）
+/// 使用并发控制以提高速度，同时避免系统资源耗尽
 pub async fn active_arp_scan(subnet: &str) -> Vec<ArpEntry> {
     let mut entries = Vec::new();
+    let semaphore = Arc::new(Semaphore::new(50)); // 限制并发 ARP 请求数量
     let mut handles = Vec::new();
 
     // 对子网内的每个 IP 发送 ARP 请求
     for i in 1..255 {
         let ip = format!("{}.{}", subnet, i);
-        handles.push(tokio::task::spawn_blocking(move || {
-            send_arp_request(&ip)
+        let sem_clone = Arc::clone(&semaphore);
+        handles.push(tokio::spawn(async move {
+            let _permit = sem_clone.acquire().await.ok()?;
+            // 使用 spawn_blocking 因为 arping 是阻塞的系统调用
+            let result = tokio::task::spawn_blocking(move || {
+                send_arp_request(&ip)
+            }).await.ok()?;
+            result
         }));
     }
 
@@ -204,8 +212,16 @@ pub fn parse_arping_output(output: &str) -> Option<String> {
 
 // ── ICMP Ping 主机存活检测 ──────────────────────────────────────────────────
 
-/// Ping 一个主机，返回是否在线（超时 500ms）
+/// Ping 一个主机，返回是否在线（支持重试机制）
+/// 默认超时 500ms，重试 2 次（总共 3 次尝试）
 pub async fn ping_host(ip: &str) -> bool {
+    ping_host_with_retries(ip, 500, 2).await
+}
+
+/// Ping 一个主机，支持自定义重试次数
+/// timeout_ms: 每次超时时间
+/// retries: 重试次数（0 表示只尝试 1 次）
+pub async fn ping_host_with_retries(ip: &str, timeout_ms: u64, retries: u32) -> bool {
     let ip_addr: IpAddr = match ip.parse() {
         Ok(addr) => addr,
         Err(_) => return false,
@@ -225,14 +241,25 @@ pub async fn ping_host(ip: &str) -> bool {
     // surge-ping API: pinger 是异步方法，返回 Pinger 结构体（非 Result）
     let ident = surge_ping::PingIdentifier(rand::random());
     let mut pinger = client.pinger(ip_addr, ident).await;
-    pinger.timeout(Duration::from_millis(500));
+    pinger.timeout(Duration::from_millis(timeout_ms));
 
-    // 发送 1 个 ICMP 包，序号 0
-    let seq = surge_ping::PingSequence(0);
-    match pinger.ping(seq, &[]).await {
-        Ok((_, _)) => true,
-        Err(_) => false,
+    // 尝试多次 ping
+    for i in 0..=retries {
+        let seq = surge_ping::PingSequence(i as u16);
+        match pinger.ping(seq, &[]).await {
+            Ok((_, _)) => return true,
+            Err(_) => {
+                // 最后一次失败才返回 false
+                if i == retries {
+                    return false;
+                }
+                // 短暂延迟后重试
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
     }
+
+    false
 }
 
 // ── UDP Service Discovery (mDNS + SSDP) ────────────────────────────────────
@@ -901,11 +928,29 @@ pub async fn perform_real_scan_internal(
     // ═══════════════════════════════════════════════════════════════════════════
 
     println!("Phase 1: ARP scan to discover all link-layer devices...");
+
+    // 1a. 被动 ARP 缓存扫描
     let arp_entries = arp_scan(&subnet);
-    println!("Phase 1 complete: {} devices found via ARP", arp_entries.len());
+    println!("  Passive ARP cache: {} devices found", arp_entries.len());
+
+    // 1b. 主动 ARP 探测（使用 arping）- 这对静态 IP 设备特别重要
+    // 因为静态 IP 设备可能没有出现在 ARP 缓存中
+    println!("  Active ARP probing (arping) for static IP devices...");
+    let active_entries = active_arp_scan(&subnet).await;
+    println!("  Active ARP probe: {} devices responded", active_entries.len());
+
+    // 合并被动和主动 ARP 结果
+    let mut all_arp_entries = arp_entries.clone();
+    for entry in active_entries {
+        // 避免重复添加
+        if !all_arp_entries.iter().any(|e| e.ip == entry.ip) {
+            all_arp_entries.push(entry);
+        }
+    }
+    println!("Phase 1 complete: {} total devices found via ARP", all_arp_entries.len());
 
     // 收集 ARP 发现的 IP 地址
-    let mut online_hosts: Vec<String> = arp_entries
+    let mut online_hosts: Vec<String> = all_arp_entries
         .iter()
         .map(|e| e.ip.clone())
         .collect();
@@ -915,6 +960,7 @@ pub async fn perform_real_scan_internal(
     // ═══════════════════════════════════════════════════════════════════════════
 
     println!("Phase 2: ICMP Ping scan to detect additional online hosts...");
+    println!("  (Using 3 retries per host with 500ms timeout for reliability)");
     let mut ping_handles = Vec::new();
 
     for i in 1..255 {
@@ -926,7 +972,9 @@ pub async fn perform_real_scan_internal(
         }
 
         ping_handles.push(tokio::spawn(async move {
-            if ping_host(&ip_str).await {
+            // 使用重试机制：500ms 超时，重试 2 次（总共 3 次尝试）
+            if ping_host_with_retries(&ip_str, 500, 2).await {
+                println!("    ICMP response from: {}", ip_str);
                 Some(ip_str)
             } else {
                 None
@@ -934,13 +982,16 @@ pub async fn perform_real_scan_internal(
         }));
     }
 
+    let mut icmp_hosts = Vec::new();
     for handle in ping_handles {
         if let Ok(Some(ip)) = handle.await {
-            online_hosts.push(ip);
+            online_hosts.push(ip.clone());
+            icmp_hosts.push(ip);
         }
     }
 
-    println!("Phase 2 complete: {} total hosts online", online_hosts.len());
+    println!("Phase 2 complete: {} new hosts via ICMP ping ({} total online)",
+             icmp_hosts.len(), online_hosts.len());
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 3: UDP Service Discovery (mDNS + SSDP)
@@ -988,7 +1039,9 @@ pub async fn perform_real_scan_internal(
     // Phase 4: 对发现的设备进行端口扫描
     // ═══════════════════════════════════════════════════════════════════════════
 
-    println!("Phase 4: Port scanning {} hosts...", online_hosts.len());
+    println!("Phase 4: Port scanning {} hosts with {} common ports...",
+             online_hosts.len(), ports_to_scan.len());
+    println!("  Port list: {:?}", ports_to_scan);
 
     // Create semaphore to limit concurrent connections
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
@@ -996,6 +1049,10 @@ pub async fn perform_real_scan_internal(
 
     // Convert services_by_ip to Arc for sharing across tasks
     let services_by_ip = Arc::new(services_by_ip);
+
+    // 用于跟踪进度的计数器
+    let scanned_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_hosts = online_hosts.len();
 
     for ip_str in online_hosts {
         let ip: IpAddr = match ip_str.parse() {
@@ -1006,24 +1063,48 @@ pub async fn perform_real_scan_internal(
         let sem_clone = Arc::clone(&semaphore);
         let services_clone = Arc::clone(&services_by_ip);
         let timeout_ms = config.timeout_ms;
+        let count_clone = Arc::clone(&scanned_count);
 
         handles.push(tokio::spawn(async move {
             let mut found_ports = Vec::new();
 
-            // Scan all ports concurrently per host with semaphore control
-            let mut port_handles = Vec::new();
-            for port in ports {
-                let ip_clone = ip;
-                let permit = sem_clone.clone().acquire_owned().await.ok();
-                port_handles.push(tokio::spawn(async move {
-                    let _permit = permit; // Hold permit until task completes
-                    scan_port(ip_clone, port, timeout_ms).await
-                }));
-            }
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 修复 TrueNAS 端口扫描失败问题：降低并发 + 添加延迟
+            // 问题：并发连接触发防火墙临时封锁
+            // 解决方案：每批次扫描 5 个端口，批次间延迟 100ms
+            // ═══════════════════════════════════════════════════════════════════════════
 
-            for ph in port_handles {
-                if let Ok(Some(info)) = ph.await {
-                    found_ports.push(info);
+            const BATCH_SIZE: usize = 5;
+            const BATCH_DELAY_MS: u64 = 100;
+
+            for (batch_idx, batch) in ports.chunks(BATCH_SIZE).enumerate() {
+                if batch_idx > 0 {
+                    // 批次间延迟，避免触发防火墙
+                    tokio::time::sleep(Duration::from_millis(BATCH_DELAY_MS)).await;
+                }
+
+                // 扫描当前批次的端口
+                let mut port_handles = Vec::new();
+                for port in batch {
+                    let ip_clone = ip;
+                    let port = *port;
+                    let permit = sem_clone.clone().acquire_owned().await.ok();
+                    port_handles.push(tokio::spawn(async move {
+                        let _permit = permit; // Hold permit until task completes
+                        let result = scan_port(ip_clone, port, timeout_ms).await;
+                        // 调试输出：显示每个端口的扫描结果
+                        match &result {
+                            Some(info) => println!("      [DEBUG] {}:{} - OPEN ({})", ip_clone, port, info.service_label),
+                            None => println!("      [DEBUG] {}:{} - closed/filtered", ip_clone, port),
+                        }
+                        result
+                    }));
+                }
+
+                for ph in port_handles {
+                    if let Ok(Some(info)) = ph.await {
+                        found_ports.push(info);
+                    }
                 }
             }
 
@@ -1040,6 +1121,19 @@ pub async fn perform_real_scan_internal(
                 (None, None)
             };
 
+            // 更新进度并报告发现的端口
+            let current = count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if !found_ports.is_empty() {
+                let port_list: Vec<String> = found_ports.iter()
+                    .map(|p| format!("{}:{}", p.port, p.service_label))
+                    .collect();
+                println!("    [{}/{}] {} - found ports: {}",
+                         current, total_hosts, ip_str, port_list.join(", "));
+            } else {
+                println!("    [{}/{}] {} - no open ports found",
+                         current, total_hosts, ip_str);
+            }
+
             Some(HostInfo {
                 ip: ip_str,
                 hostname,
@@ -1052,6 +1146,7 @@ pub async fn perform_real_scan_internal(
 
     for handle in handles {
         if let Ok(Some(host)) = handle.await {
+            // 即使没有发现开放端口，也要包含在线主机（这对静态 IP 设备很重要）
             results.push(host);
         }
     }
