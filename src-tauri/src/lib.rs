@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
 // ── Service type enum (W-2: expanded) ──────────────────────────────────────
@@ -96,6 +98,21 @@ impl ServiceType {
 // ── Data structures ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanConfig {
+    pub timeout_ms: u64,
+    pub max_concurrent: usize,
+}
+
+impl Default for ScanConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 1000,
+            max_concurrent: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortInfo {
     pub port: u16,
     pub service: ServiceType,
@@ -150,9 +167,9 @@ const COMMON_PORTS: &[u16] = &[
 
 // ── Port scanning ──────────────────────────────────────────────────────────
 
-async fn scan_port(ip: IpAddr, port: u16) -> Option<PortInfo> {
+async fn scan_port(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<PortInfo> {
     let addr = SocketAddr::new(ip, port);
-    let timeout_duration = Duration::from_millis(500);
+    let timeout_duration = Duration::from_millis(timeout_ms);
 
     match timeout(timeout_duration, TcpStream::connect(&addr)).await {
         Ok(Ok(_)) => {
@@ -239,10 +256,15 @@ pub fn detect_network_internal() -> Result<NetworkInfo, String> {
     }
 }
 
-// ── Main scan function (improved) ──────────────────────────────────────────
+// ── Main scan function (improved with concurrency control) ─────────────────
 
-pub async fn perform_real_scan_internal(subnet: String, extra_ports: Option<Vec<u16>>) -> Vec<HostInfo> {
+pub async fn perform_real_scan_internal(
+    subnet: String,
+    extra_ports: Option<Vec<u16>>,
+    config: Option<ScanConfig>,
+) -> Vec<HostInfo> {
     let mut results = Vec::new();
+    let config = config.unwrap_or_default();
 
     // Merge common ports with any user-specified extra ports (W-5)
     let mut ports_to_scan: Vec<u16> = COMMON_PORTS.to_vec();
@@ -255,6 +277,8 @@ pub async fn perform_real_scan_internal(subnet: String, extra_ports: Option<Vec<
     }
     ports_to_scan.sort();
 
+    // Create semaphore to limit concurrent connections
+    let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
     let mut handles = Vec::new();
 
     for i in 1..255 {
@@ -264,16 +288,20 @@ pub async fn perform_real_scan_internal(subnet: String, extra_ports: Option<Vec<
             Err(_) => continue,
         };
         let ports = ports_to_scan.clone();
+        let sem_clone = Arc::clone(&semaphore);
+        let timeout_ms = config.timeout_ms;
 
         handles.push(tokio::spawn(async move {
             let mut found_ports = Vec::new();
 
-            // Scan all ports concurrently per host
+            // Scan all ports concurrently per host with semaphore control
             let mut port_handles = Vec::new();
             for port in ports {
                 let ip_clone = ip;
+                let permit = sem_clone.clone().acquire_owned().await.ok();
                 port_handles.push(tokio::spawn(async move {
-                    scan_port(ip_clone, port).await
+                    let _permit = permit; // Hold permit until task completes
+                    scan_port(ip_clone, port, timeout_ms).await
                 }));
             }
 
